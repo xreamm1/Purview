@@ -155,7 +155,9 @@ fn read_program(path: &Path, file: &str) -> Result<Vec<u8>, String> {
         Ok(zip) => zip,
         // A download cut short, say.
         Err(e) if lower.ends_with(".zip") => return Err(format!("{file}: {e}")),
-        Err(_) if !lower.starts_with("horizon-client") => return Err(not_a_game(file)),
+        Err(_) if !lower.starts_with("horizon-client") && lower != "purview-game.exe" => {
+            return Err(not_a_game(file));
+        }
         Err(_) => return read_at_most(open()?, file),
     };
     from_zip(zip, file, true)
@@ -497,6 +499,12 @@ mod tests {
         let plain = d.join(name);
         fs::write(&plain, program(b"plain")).unwrap();
         assert_eq!(read_program(&plain, name).unwrap(), program(b"plain"));
+        let purview = d.join("purview-game.exe");
+        fs::write(&purview, program(b"fork engine")).unwrap();
+        assert_eq!(
+            read_program(&purview, "purview-game.exe").unwrap(),
+            program(b"fork engine")
+        );
         // The launcher carries the mark too.
         let launcher = d.join("horizon-launcher");
         fs::write(&launcher, program(b"launcher")).unwrap();

@@ -1,17 +1,17 @@
 //! Per-user setup on Windows, no administrator needed.
 //!
 //! `horizon-launcher-setup.exe` (the launcher's own binary under another name, made by the
-//! release workflow) copies itself to `%LOCALAPPDATA%\Programs\Horizon Launcher\horizon-launcher.exe`,
+//! release workflow) copies itself to `%LOCALAPPDATA%\Programs\Purview\purview.exe`,
 //! makes the Start menu shortcut (and the desktop one if asked) and the Uninstall entry under HKCU,
-//! and starts the installed copy. `horizon-launcher.exe uninstall` takes it all away again: the
+//! and starts the installed copy. `purview.exe uninstall` takes it all away again: the
 //! launcher's data folder only when asked, the game's folder never.
 //!
 //! Nothing here deletes a folder it didn't make: the install folder is always called
-//! "Horizon Launcher" ([`folder_for`]) and is removed with `remove_dir`, which only takes an empty one.
+//! "Purview" ([`folder_for`]) and is removed with `remove_dir`, which only takes an empty one.
 //!
 //! Command lines (handled in `main` before the CLI parser, so MCP never sees them):
 //! `horizon-launcher-setup.exe` (window), `... setup --quiet [--dir <folder>] [--desktop-shortcut]`,
-//! `horizon-launcher.exe uninstall` (window), `... uninstall --quiet [--remove-data]`.
+//! `purview.exe uninstall` (window), `... uninstall --quiet [--remove-data]`.
 use crate::backend;
 use crate::shortcut;
 use std::fs;
@@ -20,12 +20,12 @@ use std::path::{Path, PathBuf};
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
 use winreg::RegKey;
 
-pub const APP_NAME: &str = "Horizon Launcher";
-const BINARY: &str = "horizon-launcher.exe";
-const PUBLISHER: &str = "Horizon";
-const ABOUT_URL: &str = "https://playhorizon.dev";
-const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\HorizonLauncher";
-const OWN_KEY: &str = r"Software\Horizon\Launcher";
+pub const APP_NAME: &str = "Purview";
+const BINARY: &str = "purview.exe";
+const PUBLISHER: &str = "xreamm1";
+const ABOUT_URL: &str = "https://github.com/xreamm1/Purview";
+const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\PurviewLauncher";
+const OWN_KEY: &str = r"Software\Purview\Launcher";
 const ASIDE_PREFIX: &str = "horizon-launcher-uninstall-";
 
 pub use crate::setup_args::Mode;
@@ -45,7 +45,7 @@ pub enum Step {
 
 #[derive(Clone, Debug)]
 pub struct Options {
-    /// Where the launcher goes (always a folder called "Horizon Launcher").
+    /// Where the launcher goes (always a folder called "Purview").
     pub dir: PathBuf,
     pub desktop: bool,
     /// Uninstall only: also delete the launcher's data folder.
@@ -88,7 +88,7 @@ pub fn is_setup_exe() -> bool {
     backend::exe_path()
         .file_stem()
         .and_then(|s| s.to_str())
-        .is_some_and(|s| s.to_ascii_lowercase().starts_with("horizon-launcher-setup"))
+        .is_some_and(|s| s.to_ascii_lowercase().starts_with("purview-setup"))
 }
 
 /// The window to open instead of the launcher: the wizard for the setup exe started without
@@ -104,7 +104,7 @@ fn invocation() -> Invocation {
     classify(&args(), is_setup_exe())
 }
 
-/// `%LOCALAPPDATA%\Programs\Horizon Launcher`; `HORIZON_LAUNCHER_SETUP_DIR` replaces it (tests).
+/// `%LOCALAPPDATA%\Programs\Purview`; `HORIZON_LAUNCHER_SETUP_DIR` replaces it (tests).
 pub fn default_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("HORIZON_LAUNCHER_SETUP_DIR").filter(|d| !d.is_empty()) {
         return folder_for(Path::new(&dir));
@@ -115,7 +115,7 @@ pub fn default_dir() -> PathBuf {
         .join(APP_NAME)
 }
 
-/// The install folder for a folder the player picked: always one called "Horizon Launcher", so
+/// The install folder for a folder the player picked: always one called "Purview", so
 /// uninstalling never has to guess what is ours.
 pub fn folder_for(chosen: &Path) -> PathBuf {
     if chosen
@@ -368,13 +368,7 @@ fn remove_all(path: &Path, left: &mut Vec<String>) {
 /// The ids of the other launchers running now (this process is a launcher too).
 fn running_launchers() -> Vec<u32> {
     let out = crate::process::command("tasklist")
-        .args([
-            "/FO",
-            "CSV",
-            "/NH",
-            "/FI",
-            "IMAGENAME eq horizon-launcher.exe",
-        ])
+        .args(["/FO", "CSV", "/NH", "/FI", "IMAGENAME eq purview.exe"])
         .output();
     out.map(|o| {
         crate::setup_args::other_launcher_pids(
@@ -421,7 +415,7 @@ fn close_running_launchers(progress: &impl Fn(Step, f32)) {
 /// Takes the install away. Returns what could not be removed (a file in use, say).
 pub fn uninstall(remove_data: bool, progress: impl Fn(Step, f32)) -> Result<Vec<String>, String> {
     let dir = registered()
-        .ok_or("Horizon Launcher is not installed for this account.")?
+        .ok_or("Purview is not installed for this account.")?
         .dir;
     close_running_launchers(&progress);
     clean_aside(&dir);
@@ -457,13 +451,13 @@ pub fn uninstall(remove_data: bool, progress: impl Fn(Step, f32)) -> Result<Vec<
         }
     }
     // `Software\Horizon` goes only when nothing else (the game) keeps anything in it.
-    if let Ok(parent) = hkcu.open_subkey_with_flags(r"Software\Horizon", KEY_READ) {
+    if let Ok(parent) = hkcu.open_subkey_with_flags(r"Software\Purview", KEY_READ) {
         let empty = parent
             .query_info()
             .is_ok_and(|info| info.sub_keys == 0 && info.values == 0);
         drop(parent);
         if empty {
-            let _ = hkcu.delete_subkey(r"Software\Horizon");
+            let _ = hkcu.delete_subkey(r"Software\Purview");
         }
     }
 
@@ -477,7 +471,7 @@ pub fn uninstall(remove_data: bool, progress: impl Fn(Step, f32)) -> Result<Vec<
     // Only what setup and self-updates put there: the launcher and what they moved aside.
     for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().to_lowercase();
-        if name == BINARY || name.starts_with("horizon-launcher.exe.") {
+        if name == BINARY || name.starts_with("purview.exe.") {
             remove_file(&entry.path(), &mut left);
         }
     }
@@ -588,11 +582,11 @@ mod tests {
     fn the_install_folder_is_always_ours() {
         assert_eq!(
             folder_for(Path::new(r"C:\Games")),
-            PathBuf::from(r"C:\Games\Horizon Launcher")
+            PathBuf::from(r"C:\Games\Purview")
         );
         assert_eq!(
-            folder_for(Path::new(r"C:\Games\horizon launcher")),
-            PathBuf::from(r"C:\Games\horizon launcher")
+            folder_for(Path::new(r"C:\Games\purview")),
+            PathBuf::from(r"C:\Games\purview")
         );
     }
 
@@ -630,10 +624,10 @@ mod tests {
             .map_or(temp.clone(), PathBuf::from);
         let dir = temp.join(format!("horizon-link-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        let exe = dir.join("Horizon Launcher").join("horizon-launcher.exe");
+        let exe = dir.join("Purview").join("purview.exe");
         fs::create_dir_all(exe.parent().unwrap()).unwrap();
         fs::write(&exe, b"x").unwrap();
-        let link = dir.join("Horizon Launcher.lnk");
+        let link = dir.join("Purview.lnk");
         write_link(&link, &exe).unwrap();
         // The bug this guards: a link whose target the shell read as empty, so a double click did nothing.
         assert_eq!(
@@ -642,10 +636,7 @@ mod tests {
         );
         // The uninstaller finds its shortcuts by the program's path inside them.
         assert!(points_to(&link, &exe));
-        assert!(!points_to(
-            &link,
-            Path::new(r"C:\Other\horizon-launcher.exe")
-        ));
+        assert!(!points_to(&link, Path::new(r"C:\Other\purview.exe")));
         let _ = fs::remove_dir_all(&dir);
     }
 }

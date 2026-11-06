@@ -2667,7 +2667,15 @@ pub fn held_item_transform(
         .and_then(crate::spear::Kinetic::of)
     {
         let time_held = m.extra.using_item as f32 + s.partial;
-        t *= crate::spear::third_person_use_item(&kinetic, time_held, s.swing, 0.0, !left);
+        let ticks_since_hit =
+            crate::spear::ticks_since_hit(m.age, m.extra.last_kinetic_hit_age, s.partial);
+        t *= crate::spear::third_person_use_item(
+            &kinetic,
+            time_held,
+            s.swing,
+            ticks_since_hit,
+            !left,
+        );
     }
     Some(t)
 }

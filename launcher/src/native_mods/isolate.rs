@@ -234,7 +234,7 @@ mod tests {
         );
         assert_eq!(
             left.label(),
-            "eatinganimation was left out: made for another Horizon version"
+            "eatinganimation was left out: made for another Purview version"
         );
         // A diagnostic naming no mod of the build is the build's own error.
         assert_eq!(

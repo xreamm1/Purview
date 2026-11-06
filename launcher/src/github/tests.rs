@@ -41,6 +41,14 @@ fn mirror_serves_only_horizons_repository() {
         None
     );
     assert_eq!(
+        mirror_url_with(
+            "https://api.github.com/repos/xreamm1/Purview/releases",
+            base
+        ),
+        None,
+        "the upstream mirror must never serve the fork's launcher metadata"
+    );
+    assert_eq!(
         mirror_url_with("https://github.com/horizon-rust/horizon/releases", base),
         None
     );

@@ -144,6 +144,14 @@ impl Kinetic {
 /// `KineticWeapon.HIT_FEEDBACK_TICKS`.
 pub const HIT_FEEDBACK_TICKS: i64 = 10;
 
+/// Time since the client observed a kinetic hit, on the entity's own tick
+/// clock. An entity without a hit has no recoil, including partial frames.
+pub fn ticks_since_hit(age: u32, last_hit: Option<u32>, partial: f32) -> f32 {
+    last_hit.map_or(HIT_FEEDBACK_TICKS as f32, |last| {
+        age.wrapping_sub(last) as f32 + partial
+    })
+}
+
 /// `Mth.clamp` on floats (a NaN stays one).
 fn clamp(v: f32, lo: f32, hi: f32) -> f32 {
     if v < lo { lo } else { v.min(hi) }
@@ -479,6 +487,27 @@ pub fn hits_in_reach(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn third_person_hit_recoils_then_returns_to_the_charge_pose() -> Result<(), &'static str> {
+        let kinetic = Kinetic::of("minecraft:iron_spear").ok_or("missing iron spear")?;
+        let pose = |age, hit, partial| {
+            third_person_use_item(
+                &kinetic,
+                30.0,
+                0.0,
+                ticks_since_hit(age, hit, partial),
+                true,
+            )
+        };
+        let rest = pose(100, None, 0.5);
+        assert!(!rest.abs_diff_eq(pose(103, Some(100), 0.0), 1e-5));
+        assert!(rest.abs_diff_eq(pose(110, Some(100), 0.0), 1e-5));
+        assert!(rest.abs_diff_eq(pose(100, None, 0.9), 1e-5));
+        // The counter wrapping must not erase a hit still within its recoil window.
+        assert_eq!(ticks_since_hit(1, Some(u32::MAX), 0.5), 2.5);
+        Ok(())
+    }
 
     #[test]
     fn the_jab_starts_and_ends_at_rest() {

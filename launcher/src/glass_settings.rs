@@ -47,7 +47,7 @@ fn card() -> Div {
 
 /// An About tile (`rounded-[14px] bg-white/[0.045] p-5`): its lead, name, a line under it and
 /// what it does.
-fn about_tile(lead: AnyElement, title: String, note: String, action: AnyElement) -> Div {
+fn about_tile(lead: AnyElement, title: String, note: impl IntoElement, action: AnyElement) -> Div {
     div()
         .flex()
         .flex_col()
@@ -292,6 +292,7 @@ impl Launcher {
         horizon_action: Option<AnyElement>,
         launcher: String,
         launcher_action: Option<AnyElement>,
+        cx: &mut Context<Self>,
     ) -> Div {
         let t = self.theme;
         let installed = self
@@ -360,7 +361,13 @@ impl Launcher {
             .child(about_tile(
                 square("computer"),
                 tr("Launcher").to_string(),
-                launcher,
+                div()
+                    .id("launcher-version")
+                    .child(launcher)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.version_clicked();
+                        cx.notify();
+                    })),
                 div().children(launcher_action).into_any_element(),
             ))
             .child(about_tile(
@@ -439,7 +446,13 @@ impl Launcher {
                 .into_any_element()
         };
         let about = card()
-            .child(self.about_tiles(b.horizon, b.horizon_action, b.launcher, b.launcher_action))
+            .child(self.about_tiles(
+                b.horizon,
+                b.horizon_action,
+                b.launcher,
+                b.launcher_action,
+                cx,
+            ))
             .child(index_row(
                 0,
                 tr("Logs"),

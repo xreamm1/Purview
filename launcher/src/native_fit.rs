@@ -245,7 +245,7 @@ mod tests {
         );
         assert_eq!(
             describe(&found.unwrap(), &at_28),
-            "Doesn't build on the Horizon you play (E_TARGET_NOT_FOUND): a build leaves it out until its author updates it"
+            "Doesn't build on the Purview you play (E_TARGET_NOT_FOUND): a build leaves it out until its author updates it"
         );
         // Broken on another commit than the one played: as before.
         let elsewhere = [BrokenOn {

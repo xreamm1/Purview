@@ -3386,7 +3386,8 @@ fn event_kind(event: &HostEvent) -> EventKind {
 fn level_event_except(id: i32, acting: Option<u32>, collateral_break: bool) -> Option<u32> {
     if matches!(
         id,
-        2015 | 1500
+        2013 | 2015
+            | 1500
             | 1501
             | 1503
             | 1505
@@ -3894,6 +3895,14 @@ mod tests {
         assert_eq!(super::level_event_except(1500, actor, false), None);
         assert_eq!(super::level_event_except(2001, actor, false), actor);
         assert_eq!(super::level_event_except(2001, actor, true), None);
+    }
+
+    /// The attacker's client does not predict the mace's smash dust. This
+    /// also covers single player, whose player is an integrated-server guest.
+    #[test]
+    fn mace_smash_dust_reaches_the_attacker() {
+        assert_eq!(super::level_event_except(2013, Some(4), false), None);
+        assert_eq!(super::level_event_except(2013, None, false), None);
     }
 
     /// The names a mod matches on for a broken item's slot (a contract).

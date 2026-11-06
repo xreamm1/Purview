@@ -5,6 +5,52 @@
 use super::*;
 
 impl Launcher {
+    pub(super) fn microsoft_setup_controls(&self, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let error = match &self.sign_in_state {
+            Some(SignInState::Done(Err(error))) => Some(error.clone()),
+            _ => None,
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .child(tr(account::NOT_CONFIGURED))
+            .children(error.map(|error| div().text_color(t.danger).child(tr(&error).to_string())))
+            .child(
+                button(
+                    "microsoft-setup-help",
+                    "Setup instructions",
+                    Kind::Secondary,
+                    &t,
+                )
+                .on_click(|_, _, cx| {
+                    cx.open_url(
+                        "https://github.com/xreamm1/Purview/blob/main/docs/microsoft-account.md",
+                    );
+                }),
+            )
+            .child(
+                button(
+                    "microsoft-paste-id",
+                    "Paste application ID",
+                    Kind::Primary,
+                    &t,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    let id = cx
+                        .read_from_clipboard()
+                        .and_then(|item| item.text())
+                        .unwrap_or_default();
+                    match horizon_launcher::microsoft_config::save_client_id(&id) {
+                        Ok(()) => this.sign_in_state = None,
+                        Err(error) => this.sign_in_state = Some(SignInState::Done(Err(error))),
+                    }
+                    cx.notify();
+                })),
+            )
+    }
+
     /// Whether the screen covers the window: no owner, and either Play was refused or the player
     /// hasn't read it yet. The data question comes first.
     pub(crate) fn asking_owner(&self) -> bool {
@@ -46,7 +92,7 @@ impl Launcher {
         // The screenshot preview shows a code without asking Microsoft for one.
         let state = match &self.sign_in_state {
             _ if sign_in_preview() => Shown::Code("https://www.microsoft.com/link", "K7Q-4MXR"),
-            _ if !configured => Shown::Error(tr(account::NOT_CONFIGURED)),
+            _ if !configured => Shown::Idle,
             Some(SignInState::Starting) => Shown::Starting("Asking Microsoft…"),
             Some(SignInState::Working(phase)) => Shown::Starting(phase.label()),
             Some(SignInState::Code(code)) => Shown::Code(&code.verification_uri, &code.user_code),
@@ -98,6 +144,9 @@ impl Launcher {
                 .border_1()
                 .border_color(plate::alpha(n.stroke, n.stroke_alpha))
         };
+        if !configured {
+            body = body.child(self.microsoft_setup_controls(cx));
+        }
         body = match state {
             Shown::Code(uri, user_code) => {
                 let copy = user_code.to_string();
@@ -155,6 +204,7 @@ impl Launcher {
             Shown::Idle => body,
         };
         let main = match state {
+            _ if !configured => None,
             Shown::Code(uri, _) => {
                 let uri = uri.to_string();
                 Some(
@@ -285,6 +335,9 @@ impl Launcher {
                         "Your worlds, offline names and settings stay where they are.",
                     ))),
             );
+        if !configured {
+            card = card.child(panel().child(self.microsoft_setup_controls(cx)));
+        }
         card = match state {
             Shown::Code(uri, user_code) => {
                 let copy = user_code.to_string();
@@ -334,6 +387,7 @@ impl Launcher {
             Shown::Idle => card,
         };
         let main: Option<AnyElement> = match state {
+            _ if !configured => None,
             Shown::Code(uri, _) => {
                 let uri = uri.to_string();
                 Some(

@@ -1034,8 +1034,15 @@ def level_respawn_points(host, guest, out):
     try:
         guest('command', command=f'spawnpoint @s {x} 100 {z}')
         results['spawnpoint'] = die_and_respawn(guest)
-        guest('command', command=f'setblock {x + 2} 100 {z} minecraft:respawn_anchor[charges=2]')
+        guest('command', command=f'setblock {x + 2} 100 {z} minecraft:respawn_anchor')
+        guest('command', command='item replace entity @s weapon.mainhand with minecraft:glowstone 2')
         guest.wait(10)
+        for _ in range(2):
+            guest.raw('interact', x + 2, 100, z)
+            guest.wait(10)
+        charged = guest.raw('block', x + 2, 100, z).get('state', '')
+        assert 'charges=2' in charged, f'glowstone did not charge the anchor: {charged}'
+        guest('command', command='item replace entity @s weapon.mainhand with minecraft:air')
         guest.raw('interact', x + 2, 100, z)
         guest.wait(10)
         results['anchor'] = die_and_respawn(guest)
@@ -1098,6 +1105,9 @@ def level_guest_end(host, guest, out):
         landed = pos_of(guest)
         assert dims(host, guest) == (OVERWORLD, END), f'host, guest in {dims(host, guest)}'
         assert [int(v // 1) for v in landed] == [100, 49, 0], f'the guest landed at {landed}'
+        floor = [guest.raw('block', 100 + dx, 48, dz).get('block')
+                 for dz in range(-2, 3) for dx in range(-2, 3)]
+        assert floor == ['minecraft:obsidian'] * 25, f'the End arrival platform: {floor}'
     finally:
         guest('command', command=f'execute in {OVERWORLD} run setblock {x + 2} {y} {z} minecraft:air')
     # A gateway far out with an exact exit at the End spawn, as end_gateway_return's
@@ -1118,6 +1128,12 @@ def level_guest_end(host, guest, out):
     assert dims(host, guest) == (OVERWORLD, END), f'host, guest in {dims(host, guest)}'
     assert abs(gateway[0] - 100.5) < 1 and abs(gateway[2] - 0.5) < 1 and 49 <= gateway[1] <= 50, \
         f'the gateway left the guest at {gateway}'
+    # Return to the source chunk before querying it: unloaded client chunks read as air.
+    guest('command', command='tp @s 700.5 80 0.5')
+    guest.wait(60)
+    source = guest.raw('block', 702, 80, 0).get('block')
+    assert source == 'minecraft:end_gateway', f'the used gateway disappeared: {source}'
+    guest('command', command='tp @s 100.5 49 0.5')
     guest.wait(40)
     ex, ey, ez = (int(v // 1) for v in pos_of(guest))
     guest('command', command=f'setblock {ex + 2} {ey} {ez} minecraft:end_portal')
@@ -7215,7 +7231,7 @@ def run(ctl, out, resources, checks):
     # (a host paused before its world loads waits at "Connecting to the server..." for ever).
     headless = bool(os.environ.get('HORIZON_E2E_HEADLESS')) or (
         sys.platform.startswith('linux') and not shutil.which('vscreen'))
-    launch = ['launch']
+    launch = ['launch', '--resources', str(resources)]
     if headless or sys.platform == 'darwin':
         launch.append('--offscreen')
     if headless:
@@ -13313,6 +13329,56 @@ def check_legacy_pvp(host, guest, out):
 
 CHECKS += ['legacy-pvp']
 CHECK_FNS['legacy-pvp'] = check_legacy_pvp
+
+
+def check_boat_water_dismount(host, guest, out):
+    """A rider leaving a stationary floating boat stands on its collision box."""
+    seen = {}
+    x, _, z = map(math.floor, pos_of(host))
+    y = 110
+    tag = 'water_dismount'
+    for player in (host, guest):
+        before = pos_of(player)
+        try:
+            player('command', command='gamemode survival')
+            player('command', command=f'fill {x - 4} {y - 3} {z - 4} {x + 4} {y + 4} {z + 4} minecraft:air')
+            player('command', command=f'fill {x - 4} {y - 3} {z - 4} {x + 4} {y - 3} {z + 4} minecraft:stone')
+            player('command', command=f'fill {x - 4} {y - 2} {z - 4} {x + 4} {y - 1} {z + 4} minecraft:water')
+            player('command', command=f'tp @s {x + 0.5} {y} {z - 1.5}')
+            player('command', command=f'summon minecraft:oak_boat {x + 0.5} {y} {z + 0.5} {{Tags:["{tag}"]}}')
+            player.wait(40)
+            boat = board(player, 'oak_boat', (x + 0.5, y, z + 0.5))
+            player.raw('key', 'shift', 'down')
+            player.wait(10)
+            status = player('status')
+            assert status.get('riding') is None, f'{player.name} stayed mounted'
+            vessel = next(o for o in status['objects'] if o['id'] == boat['id'])
+            at = pos_of(player)
+            assert at[1] >= vessel['position'][1] + 0.5, \
+                f'{player.name} fell through the boat: player={at}, boat={vessel["position"]}'
+            seen[player.name] = {'player': at, 'boat': vessel['position']}
+        finally:
+            player.raw('key', 'shift', 'up')
+            player('command', command=f'kill @e[tag={tag}]')
+            player('command', command=f'tp @s {before[0]} {before[1]} {before[2]}')
+    return seen
+
+
+CHECKS += ['boat-water-dismount']
+CHECK_FNS['boat-water-dismount'] = check_boat_water_dismount
+
+
+def check_travel_regressions(host, guest, out):
+    """Reported boat, anchor and End regressions without unrelated level fixtures."""
+    return {
+        'boat': check_boat_water_dismount(host, guest, out),
+        'anchor': level_respawn_points(host, guest, out),
+        'end': level_guest_end(host, guest, out),
+    }
+
+
+CHECKS += ['travel-regressions']
+CHECK_FNS['travel-regressions'] = check_travel_regressions
 
 
 if __name__ == '__main__':

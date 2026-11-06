@@ -109,14 +109,15 @@ impl Strike {
 }
 
 impl Game<'_> {
-    /// Whether the player a hit landed on stands on the ground.
-    pub(super) fn pvp_victim_on_ground(host: &LanHost, victim: Victim) -> bool {
+    /// The hit player's identity, impact position and ground state, before
+    /// swapping the attacker into Game for the weapon's post-hit effects.
+    pub(super) fn pvp_victim_state(host: &LanHost, victim: Victim) -> Option<(i32, Vec3, bool)> {
         match victim {
-            Victim::Guest(conn) => host
-                .hub
-                .guest(conn)
-                .and_then(|g| g.motion.as_deref())
-                .is_some_and(|p| p.ground.on_ground),
+            Victim::Guest(conn) => host.hub.guest(conn).and_then(|g| {
+                g.motion
+                    .as_deref()
+                    .map(|p| (g.entity_id, p.position, p.ground.on_ground))
+            }),
         }
     }
 

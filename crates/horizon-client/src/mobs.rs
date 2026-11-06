@@ -1164,6 +1164,8 @@ pub struct Extra {
     pub swing_right_arm: Option<bool>,
     /// The current swing is a STAB (`SwingAnimationType` 2): a spear's jab.
     pub swing_stab: bool,
+    /// Client-local entity age of the last kinetic-hit feedback event. Not saved.
+    pub last_kinetic_hit_age: Option<u32>,
     pub flag: bool,
     pub flag2: bool,
     /// `AbstractHorse`'s `Bred` save flag: nothing sets it at runtime (no

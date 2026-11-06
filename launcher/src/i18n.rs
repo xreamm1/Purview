@@ -622,16 +622,34 @@ type Table = HashMap<String, &'static str>;
 fn table(language: Language) -> &'static Table {
     static TABLES: OnceLock<Vec<Table>> = OnceLock::new();
     let tables = TABLES.get_or_init(|| {
-        Language::ALL
+        let mut tables: Vec<Table> = Language::ALL
             .iter()
             .map(|l| {
                 serde_json::from_str::<HashMap<String, String>>(l.source())
                     .unwrap_or_default()
                     .into_iter()
-                    .map(|(en, said)| (en, &*Box::leak(said.into_boxed_str())))
+                    .map(|(en, said)| {
+                        (
+                            en,
+                            &*Box::leak(said.replace("Horizon", "Purview").into_boxed_str()),
+                        )
+                    })
                     .collect()
             })
-            .collect()
+            .collect();
+        let branded: Table = tables
+            .iter()
+            .flat_map(|table| table.keys())
+            .filter(|en| en.contains("Horizon"))
+            .map(|en| {
+                (
+                    en.clone(),
+                    &*Box::leak(en.replace("Horizon", "Purview").into_boxed_str()),
+                )
+            })
+            .collect();
+        tables[0] = branded;
+        tables
     });
     let i = Language::ALL
         .iter()

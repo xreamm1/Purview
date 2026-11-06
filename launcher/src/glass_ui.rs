@@ -281,23 +281,6 @@ pub fn dot(tone: Tone) -> Div {
     div().flex_none().size(px(7.)).rounded_full().bg(c)
 }
 
-/// The progress bar (`Bar`): 4 px, white at 12 %, filled in the accent's soft shade.
-pub fn bar(value: f32, accent_soft: u32) -> Div {
-    div()
-        .h(px(4.))
-        .w_full()
-        .rounded_full()
-        .overflow_hidden()
-        .bg(white(fill::ACTIVE))
-        .child(
-            div()
-                .h_full()
-                .rounded_full()
-                .w(gpui::relative(value.clamp(0., 1.)))
-                .bg(color(accent_soft)),
-        )
-}
-
 /// A sidebar row (an instance, a server): `rounded-[12px] p-2`, white at 10 % when it is the one
 /// shown, 5 % under the pointer. Its icon and lines go in as children; `pr` leaves room for a
 /// button laid over its right end.

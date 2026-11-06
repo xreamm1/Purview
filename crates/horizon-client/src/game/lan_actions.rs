@@ -3267,9 +3267,11 @@ impl Game<'_> {
             if let Some(Some(strike)) = self.as_guest(host, conn, |g| g.pvp_strike())
                 && self.pvp_land(host, victim, &strike)
             {
-                let on_ground = Self::pvp_victim_on_ground(host, victim);
+                let target = Self::pvp_victim_state(host, victim);
                 self.as_guest(host, conn, |g| {
-                    g.weapon_hit_player(on_ground);
+                    if let Some((id, center, on_ground)) = target {
+                        g.weapon_hit_player(id, center, on_ground);
+                    }
                     g.pvp_exhaustion();
                     if strike.stops_sprint() {
                         g.stop_sprint_after_extra_knockback();

@@ -9,7 +9,10 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
-pub const REPO: &str = "horizon-rust/horizon";
+pub const GAME_REPO: &str = "horizon-rust/horizon";
+/// Game downloads retain the upstream repository and trust root.
+pub const REPO: &str = GAME_REPO;
+pub const LAUNCHER_REPO: &str = "xreamm1/Purview";
 pub const README_URL: &str = "https://github.com/horizon-rust/horizon/blob/main/launcher/README.md";
 /// The players' page on connecting an AI agent (the website's docs/agents.md).
 pub const AGENT_DOCS_URL: &str = "https://playhorizon.dev/docs/agents";
@@ -127,6 +130,7 @@ pub const ASSET: Option<&str> = match OWN_ASSETS {
 };
 /// The launcher build this launcher updates itself from.
 pub const LAUNCHER_ASSET: Option<&str> = match OWN_ASSETS {
+    Some(_) if cfg!(all(windows, target_arch = "x86_64")) => Some("purview.exe"),
     Some((_, launcher)) => Some(launcher),
     None => None,
 };
@@ -674,6 +678,12 @@ fn release_list() -> Result<serde_json::Value, String> {
     ))
 }
 
+fn launcher_release_list() -> Result<serde_json::Value, String> {
+    crate::github::json(&format!(
+        "https://api.github.com/repos/{LAUNCHER_REPO}/releases?per_page=100"
+    ))
+}
+
 /// The releases in `list` whose tag passes `keep`, newest first, with the asset named `asset`.
 pub(crate) fn parse_releases(
     list: &serde_json::Value,
@@ -791,7 +801,7 @@ fn launcher_releases_in_with(
     if found.iter().any(|r| r.asset.is_some()) {
         return found;
     }
-    let api = format!("https://api.github.com/repos/{REPO}");
+    let api = format!("https://api.github.com/repos/{LAUNCHER_REPO}");
     let mut tags = Vec::new();
     for prefix in [LAUNCHER_TAG_PREFIX, OLD_LAUNCHER_TAG_PREFIX] {
         // Every `launcher@` tag is newer than every `launcher-v` one: those only when there is none.
@@ -863,9 +873,9 @@ impl Default for Links {
     /// What the launcher uses until (or unless) it can read links.json.
     fn default() -> Self {
         Self {
-            discord: "https://discord.gg/playhorizon".into(),
-            sponsor: "https://github.com/sponsors/ludovic111".into(),
-            website: "https://playhorizon.dev".into(),
+            discord: String::new(),
+            sponsor: String::new(),
+            website: String::new(),
             official_server: crate::server_list::OFFICIAL_ADDRESS.into(),
             official_server_previous: crate::server_list::OFFICIAL_PREVIOUS
                 .iter()
@@ -909,7 +919,7 @@ impl Links {
 
 /// The links from main, or the built-in ones when offline.
 pub fn links() -> Links {
-    let url = format!("https://raw.githubusercontent.com/{REPO}/main/launcher/links.json");
+    let url = format!("https://raw.githubusercontent.com/{LAUNCHER_REPO}/main/launcher/links.json");
     get(&url)
         .ok()
         .and_then(|r| r.into_string().ok())
@@ -3176,13 +3186,21 @@ fn launcher_update_from(releases: &[Release], own: &str) -> Option<Release> {
         .cloned()
 }
 
-/// Load the game's release list and both update kinds from the same GitHub response.
-/// Publish the game releases before any fallback lookups for older launcher tags, so those
-/// lookups cannot hold up the release pages or opening animation. A list error reaches both.
+/// Game builds come from upstream; Purview self-updates use the fork's release list.
+/// Publish games before launcher lookups so these cannot delay the release page.
 pub fn releases_and_updates(
     on_releases: impl FnOnce(Result<Vec<Release>, String>),
 ) -> Result<Updates, String> {
-    releases_and_updates_with(release_list, installed, launcher_releases_in, on_releases)
+    releases_and_updates_with(
+        release_list,
+        installed,
+        |_| {
+            launcher_release_list()
+                .map(|list| launcher_releases_in(&list))
+                .unwrap_or_default()
+        },
+        on_releases,
+    )
 }
 
 fn releases_and_updates_with(
@@ -3195,7 +3213,14 @@ fn releases_and_updates_with(
         Ok(list) => list,
         Err(e) => {
             on_releases(Err(e.clone()));
-            return Err(e);
+            // A game-service outage must not disable the independent launcher channel.
+            return match launcher_update(&launchers(&serde_json::Value::Null)) {
+                Some(launcher) => Ok(Updates {
+                    horizon: None,
+                    launcher: Some(launcher),
+                }),
+                None => Err(e),
+            };
         }
     };
     let releases = game_releases(&list);
@@ -3252,6 +3277,9 @@ pub fn select_after_update(selected: Option<&str>, installed_before: &[String]) 
 /// Installs `tag` (or with "latest" the newest release, pre-releases left out), then updates the selection as
 /// `select_after_update` says when `as_update`, or always selects it otherwise.
 pub fn install_tag(tag: &str, as_update: bool, progress: impl Fn(f32)) -> Result<String, String> {
+    if tag == "latest" && crate::purview_game::supported() {
+        return crate::purview_game::install(progress);
+    }
     let releases = releases()?;
     let release = if tag == "latest" {
         releases
@@ -3368,8 +3396,9 @@ pub fn self_update_allowed() -> bool {
 
 /// The version in `horizon-launcher --version`'s output (`horizon-launcher 0.1.5`).
 fn parse_version_output(out: &str) -> Option<&str> {
-    out.trim()
-        .strip_prefix("horizon-launcher ")
+    let out = out.trim();
+    out.strip_prefix("purview ")
+        .or_else(|| out.strip_prefix("horizon-launcher "))
         .map(str::trim)
         .filter(|v| !v.is_empty())
 }
@@ -3556,7 +3585,7 @@ const STAGE_GRACE: std::time::Duration = std::time::Duration::from_secs(60 * 60)
 const HANDED_OVER: &str = "handed-over";
 const UNPACKED: &str = "unpacked";
 /// The archive's name in a stage says how to open it, in the installer too.
-static ARCHIVE_ENDINGS: [&str; 3] = [".tar.gz", ".AppImage", ".zip"];
+static ARCHIVE_ENDINGS: [&str; 4] = [".tar.gz", ".AppImage", ".zip", ".exe"];
 
 fn archive_name(url: &str) -> String {
     let ending = ARCHIVE_ENDINGS
@@ -3682,7 +3711,7 @@ fn process_alive(pid: u32) -> bool {
     }
 }
 
-fn file_sha256(path: &Path) -> Result<String, String> {
+pub(crate) fn file_sha256(path: &Path) -> Result<String, String> {
     let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
     let mut hash = horizon_release_sign::Sha256::default();
     let mut buf = vec![0u8; 1 << 16];
@@ -3775,7 +3804,7 @@ pub fn stage_update(release: &Release, progress: impl Fn(f32)) -> Result<Option<
     {
         return Ok(None);
     }
-    let sha256 = signed_digest(&release.tag, launcher_asset().unwrap_or_default())?;
+    let sha256 = crate::launcher_update::digest(release)?;
     let work = update_work_dir();
     remove_abandoned_stages(&work, std::time::SystemTime::now(), process_alive);
     let stage = new_stage_folder(&work)?;
@@ -3803,6 +3832,17 @@ fn fill_stage(
             sha256: sha256.to_owned(),
         })
     };
+    // Windows updates ship as one signed executable, with no ZIP or checksum assets.
+    if cfg!(windows) && url.ends_with("/purview.exe") {
+        let version = installed_launcher_version(&archive);
+        if version.as_deref() != launcher_version(tag) {
+            return Err(format!(
+                "The signed launcher reports version {:?}, but {tag} was requested.",
+                version,
+            ));
+        }
+        return staged(archive);
+    }
     // An AppImage is the whole program: the new one takes the place of the file `$APPIMAGE` names
     // (the running mount keeps its copy until `restart` starts it). Its archive is not a `.tar.gz`
     // to unpack, so this comes before the unpacking below.
@@ -3858,8 +3898,8 @@ pub fn place_staged(staged: &Staged) -> Result<(), String> {
 }
 
 /// The website's install page, where a launcher that can't update itself sends the player.
-pub fn download_page(website: &str) -> String {
-    format!("{}/docs/install", website.trim_end_matches('/'))
+pub fn download_page(_website: &str) -> String {
+    format!("https://github.com/{LAUNCHER_REPO}/releases")
 }
 
 /// Whether this copy of the launcher can't put a new one in its place: its folder is read-only (a
@@ -4020,7 +4060,9 @@ pub enum Msg {
     Releases(Result<Vec<Release>, String>),
     Links(Links),
     Progress(String, f32),
-    Installed(String, Result<(), String>),
+    Installed(String, String, Result<(), String>),
+    /// Original requested engine and its verified fork import, before the account session.
+    PurviewGameReady(String, Result<String, String>),
     /// A version's files are gone (or could not be deleted).
     Removed(String, Result<(), String>),
     /// `prune_old_versions` ended; these versions were deleted.
@@ -5699,6 +5741,36 @@ pub fn {f}("
         stage
     }
 
+    #[test]
+    fn a_direct_executable_is_rechecked_before_placement() -> Result<(), String> {
+        let work = scratch("direct-executable-update");
+        let stage = new_stage_folder(&work)?;
+        let payload = stage.join(archive_name("https://example.test/purview.exe"));
+        fs::write(&payload, b"executable").map_err(|e| e.to_string())?;
+        let staged = Staged {
+            tag: "launcher@0.2.1".into(),
+            payload: payload.clone(),
+            sha256: horizon_release_sign::sha256_hex(b"executable"),
+        };
+        place_checked(&work, &staged, |checked| {
+            assert_eq!(checked.payload, payload);
+            assert_eq!(
+                fs::read(&checked.payload).map_err(|e| e.to_string())?,
+                b"executable"
+            );
+            Ok(())
+        })?;
+        fs::write(&payload, b"tampered").map_err(|e| e.to_string())?;
+        let mut placed = false;
+        assert!(place_checked(&work, &staged, |_| {
+            placed = true;
+            Ok(())
+        })
+        .is_err());
+        assert!(!placed);
+        fs::remove_dir_all(work).map_err(|e| e.to_string())
+    }
+
     /// A crashed launcher's stage goes, and nothing another process may still use does: a live
     /// process's however old, a recent one whose process has gone, and one handed to an installer
     /// after sitting in a long-lived window, though its folder is old.
@@ -6111,9 +6183,9 @@ pub fn {f}("
     #[test]
     fn links_fall_back_to_the_built_in_ones() {
         let defaults = Links::default();
-        assert_eq!(defaults.discord, "https://discord.gg/playhorizon");
-        assert_eq!(defaults.sponsor, "https://github.com/sponsors/ludovic111");
-        assert_eq!(defaults.website, "https://playhorizon.dev");
+        assert!(defaults.discord.is_empty());
+        assert!(defaults.sponsor.is_empty());
+        assert!(defaults.website.is_empty());
         // The file on main says the same thing as the defaults.
         assert_eq!(Links::parse(include_str!("../links.json")), defaults);
         // Unreadable or missing, offline included: the defaults.
@@ -6661,6 +6733,7 @@ pub fn {f}("
 
     #[test]
     fn launcher_versions_read_from_the_binary() {
+        assert_eq!(parse_version_output("purview 0.3.0\n"), Some("0.3.0"));
         assert_eq!(
             parse_version_output("horizon-launcher 0.1.5\n"),
             Some("0.1.5")

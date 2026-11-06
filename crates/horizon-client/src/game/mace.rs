@@ -63,6 +63,7 @@ pub(super) struct SmashPush {
     center: Vec3,
     heavy: f64,
     attacker: Option<u32>,
+    target: Spared,
     team: Option<horizon_client::scoreboard::Team>,
 }
 /// `MaceItem.getKnockbackPower` and the push of one entity at `at`, `heavy`
@@ -368,13 +369,13 @@ impl Game<'_> {
     /// player: the weapon's side of it, as `weapon_hit` does for a mob. A
     /// smash stops the fall and its Wind Burst (a `post_attack` explosion on
     /// the attacker) launches the attacker.
-    pub(super) fn weapon_hit_player(&mut self, victim_on_ground: bool) {
+    pub(super) fn weapon_hit_player(&mut self, id: i32, center: Vec3, victim_on_ground: bool) {
         let Some(stack) = self.held().cloned() else {
             return;
         };
         let smash = self.smash_attack();
-        if smash {
-            self.mace_smash_self(victim_on_ground);
+        if smash && let Some(fall) = self.mace_smash_self(victim_on_ground) {
+            self.smash_knockback(center, Spared::Player(id), fall);
         }
         if self
             .res
@@ -458,6 +459,7 @@ impl Game<'_> {
             center,
             heavy,
             attacker: self.lan_acting,
+            target,
             team: self.player_team().cloned(),
         };
         if self.lan_acting.is_some() {
@@ -493,6 +495,9 @@ impl Game<'_> {
         let Some(p) = self.player.as_mut() else {
             return;
         };
+        if push.target == Spared::Player(p.entity_id) {
+            return;
+        }
         if creative && p.flying {
             return;
         }
@@ -704,6 +709,70 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn pvp_smash_emits_dust_and_pushes_bystanders_but_not_the_victim() -> horizon_client::Result<()>
+    {
+        use crate::game::{Audio, Options, PlayerMotion, Progress, Settings, load_resources};
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").ok_or("missing HORIZON_TEST_RESOURCES")?,
+        );
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| {},
+        )?;
+        let mut options = Options::parse(std::iter::empty())?.ok_or("missing test options")?;
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.ok_or("missing GUI resources")?,
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )?;
+        let mut player = PlayerMotion::new(game.motion, Vec3::new(4.5, 200.0, 4.5))?;
+        player.fall_distance = 6.0;
+        game.player = Some(player);
+        *game.held_mut() = Some(ItemStack::new("minecraft:mace", 1));
+        game.audio.capture = Some(Vec::new());
+        game.lan_acting = Some(7);
+        let center = Vec3::new(4.5, 199.0, 4.5);
+        game.weapon_hit_player(42, center, true);
+        assert!(
+            game.lan_events
+                .iter()
+                .any(|event| *event == (2013, [4, 198, 4], 750, None))
+        );
+        assert_eq!(game.player.as_ref().map(|p| p.fall_distance), Some(0.0));
+        assert_eq!(game.creatures.smash_pushes.len(), 1);
+        let push = game.creatures.smash_pushes.remove(0);
+        let player = game.player.as_mut().ok_or("missing player")?;
+        player.entity_id = 42;
+        player.position = center;
+        player.velocity = Vec3::ZERO;
+        game.smash_push_player(&push);
+        assert_eq!(game.player.as_ref().map(|p| p.velocity), Some(Vec3::ZERO));
+        let player = game.player.as_mut().ok_or("missing player")?;
+        player.entity_id = 43;
+        player.position.x += 1.0;
+        game.smash_push_player(&push);
+        let velocity = game.player.as_ref().ok_or("missing player")?.velocity;
+        assert!(velocity.x > 0.0);
+        assert_eq!(velocity.y, f64::from(KNOCKBACK_POWER));
+        Ok(())
+    }
 
     #[test]
     fn sweep_damage_is_one_without_the_enchantment() {

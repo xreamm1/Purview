@@ -351,7 +351,12 @@ impl Game<'_> {
     /// `LivingEntity.onKineticHit` for `entity`: the hit feels (the spear
     /// moves back, `kinetic_hit_ticks`) and sounds, at most once every ten
     /// ticks.
-    pub(super) fn kinetic_hit_feedback(&mut self, entity: i32, kinetic: &Kinetic, at: [f64; 3]) {
+    pub(super) fn kinetic_hit_feedback(
+        &mut self,
+        entity: i32,
+        kinetic: &Kinetic,
+        at: [f64; 3],
+    ) -> bool {
         let now = self.world.game_time;
         if self
             .kinetic_feedback
@@ -361,6 +366,9 @@ impl Game<'_> {
             self.kinetic_feedback.insert(entity, now);
             self.audio
                 .play_unshared(kinetic.hit_sound, Some(at), 1.0, 1.0);
+            true
+        } else {
+            false
         }
     }
 
@@ -397,7 +405,14 @@ impl Game<'_> {
             (item, mob.map(|m| m.position))
         };
         if let (Some(kinetic), Some(at)) = (item.as_deref().and_then(Kinetic::of), at) {
-            self.kinetic_hit_feedback(if own { OWN } else { id }, &kinetic, [at.x, at.y, at.z]);
+            let accepted =
+                self.kinetic_hit_feedback(if own { OWN } else { id }, &kinetic, [at.x, at.y, at.z]);
+            if accepted
+                && !own
+                && let Some(mob) = self.mobs.iter_mut().find(|m| m.id == id as u32)
+            {
+                mob.extra.last_kinetic_hit_age = Some(mob.age);
+            }
         }
     }
 }

@@ -73,7 +73,7 @@ fn one_response_preserves_both_startup_results() {
 }
 
 #[test]
-fn errors_reach_releases_and_updates_without_fallback() {
+fn game_errors_reach_releases_and_updates_when_no_launcher_is_available() {
     for error in [
         "No connection: offline",
         "GitHub's rate limit was reached.",
@@ -83,12 +83,52 @@ fn errors_reach_releases_and_updates_without_fallback() {
         let result = releases_and_updates_with(
             || Err(error.into()),
             || panic!("no installed scan after failure"),
-            |_| panic!("no fallback after failure"),
+            |_| Vec::new(),
             |r| published = Some(r),
         );
         assert_eq!(published.unwrap().unwrap_err(), error);
         assert_eq!(result.unwrap_err(), error);
     }
+}
+
+#[test]
+fn fork_launcher_updates_survive_a_game_service_outage() {
+    let mut published = None;
+    let updates = releases_and_updates_with(
+        || Err("upstream unavailable".into()),
+        Vec::new,
+        |_| {
+            parse_releases(
+                &serde_json::json!([{"tag_name":"launcher@99.0.0","assets":[{
+                    "name":LAUNCHER_ASSET.unwrap_or("unsupported"),
+                    "browser_download_url":"https://github.com/xreamm1/Purview/releases/download/launcher@99.0.0/purview.exe",
+                    "size": 1
+                }]}]),
+                LAUNCHER_ASSET,
+                is_launcher_tag,
+            )
+        },
+        |result| published = Some(result),
+    );
+    assert!(published.is_some_and(|r| r.is_err()));
+    if LAUNCHER_ASSET.is_some() {
+        let updates = updates.unwrap_or_default();
+        assert!(updates.horizon.is_none());
+        assert!(updates.launcher.is_some());
+    } else {
+        assert!(updates.is_err());
+    }
+}
+
+#[test]
+fn launcher_tag_fallback_queries_only_the_fork_repository() {
+    let asked = RefCell::new(Vec::new());
+    let _ = launcher_releases_in_with(&serde_json::json!([]), |url| {
+        assert!(url.starts_with("https://api.github.com/repos/xreamm1/Purview/"));
+        asked.borrow_mut().push(url);
+        Ok(serde_json::json!([]))
+    });
+    assert_eq!(asked.borrow().len(), 2);
 }
 
 #[test]

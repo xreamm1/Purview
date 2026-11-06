@@ -1139,11 +1139,40 @@ pub fn apply_preset(preset: Preset, s: &mut crate::settings::Settings) {
     g.sky = true;
     g.fog = true;
     g.weather = true;
+    if matches!(preset, Preset::Performance | Preset::Balanced) {
+        g.entity_culling = EntityCullingMode::Asynchronous;
+        g.particle_culling = ParticleCullingMode::Asynchronous;
+        g.cache_shulker_boxes = true;
+        g.cache_signs = true;
+        g.cache_decorated_pots = true;
+        g.cache_bells = true;
+        g.cache_chests = true;
+        g.cache_banners = true;
+        g.cache_copper_golem_statues = true;
+        // Bound chunk work on many-core machines, leaving room for rendering and simulation.
+        let cap = if preset == Preset::Performance { 4 } else { 8 };
+        g.workers = horizon_threads::worker_count().saturating_sub(2).clamp(1, cap) as u32;
+        g.pacing = Pacing::Efficient;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fast_presets_enable_conservative_visibility_and_bound_chunk_work() {
+        for preset in [Preset::Performance, Preset::Balanced] {
+            let mut settings = crate::settings::Settings::default();
+            apply_preset(preset, &mut settings);
+            let g = &settings.horizon;
+            assert_eq!(g.entity_culling, EntityCullingMode::Asynchronous);
+            assert_eq!(g.particle_culling, ParticleCullingMode::Asynchronous);
+            assert!(g.cache_chests && g.cache_signs && g.cache_banners);
+            assert!((1..=if preset == Preset::Performance { 4 } else { 8 }).contains(&g.workers));
+            assert!(g.animated_textures);
+        }
+    }
 
     #[test]
     fn the_api_choice_matches_the_system() {

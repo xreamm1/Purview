@@ -57,7 +57,6 @@ mod native_log_page;
 mod new_instance;
 mod owner_page;
 mod packs_page;
-mod partner;
 mod perf;
 mod picture_cache;
 mod plate;
@@ -240,7 +239,6 @@ struct Launcher {
     checked: Option<Instant>,
     update_error: Option<String>,
     self_update: SelfUpdate,
-    self_update_hidden: bool,
     /// The Horizon version being installed as an update, and whether it becomes the selected one.
     update_install: Option<(String, bool)>,
     /// The Horizon version being installed because an instance was made or saved to play it: it
@@ -528,30 +526,6 @@ impl Launcher {
             }
         })
         .detach();
-        // Counts the time a partner banner is on screen, until it may be hidden.
-        cx.spawn(async move |this, cx| loop {
-            cx.background_executor()
-                .timer(Duration::from_secs(10))
-                .await;
-            let counting = this.update(cx, |this, cx| {
-                let s = &mut this.settings;
-                if s.partner_hidden || s.partner_seen_secs >= partner::SEEN_BEFORE_HIDE {
-                    return false;
-                }
-                // On screen on every page: the card in the sidebar, the banner on Servers.
-                s.partner_seen_secs += 10;
-                if s.partner_seen_secs % 60 == 0 || s.partner_seen_secs >= partner::SEEN_BEFORE_HIDE
-                {
-                    this.save_settings();
-                    cx.notify();
-                }
-                true
-            });
-            if !matches!(counting, Ok(true)) {
-                break;
-            }
-        })
-        .detach();
         let mut settings = Settings::load();
         i18n::set(settings.language());
         if settings.minecraft_dir.is_none() {
@@ -605,7 +579,6 @@ impl Launcher {
             // The installer the last Update started could not put the new launcher in place.
             self_update: horizon_launcher::update_handoff::take_failure()
                 .map_or(SelfUpdate::Idle, |e| SelfUpdate::Stuck(Some(e))),
-            self_update_hidden: false,
             update_install: None,
             instance_install: None,
             install_next: None,
@@ -1207,6 +1180,31 @@ impl Launcher {
                         }
                     }
                 }
+                Msg::PurviewGameReady(requested, result) => {
+                    if self.starting_client.as_deref() != Some(requested.as_str()) {
+                        continue;
+                    }
+                    match result {
+                        Ok(tag) => {
+                            self.installed = backend::installed();
+                            if horizon_launcher::purview_game::managed(&tag) {
+                                self.settings.selected = Some(tag.clone());
+                                self.save_settings();
+                            }
+                            match backend::need_prepared(&tag) {
+                                Ok(()) => self.starting_client = Some(tag),
+                                Err(e) => {
+                                    self.starting_client = None;
+                                    self.client_error = Some(e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            self.starting_client = None;
+                            self.client_error = Some(e);
+                        }
+                    }
+                }
                 Msg::Session(session) => {
                     self.load_auth_statuses(false);
                     if let Some(tag) = self.starting_client.take() {
@@ -1306,12 +1304,12 @@ impl Launcher {
                     self.bar = (self.bar.1, p);
                     self.installing = Some((tag, p));
                 }
-                Msg::Installed(tag, result) => {
+                Msg::Installed(requested, tag, result) => {
                     self.installing = None;
                     self.bar = (0., 0.);
                     self.installed = backend::installed();
-                    let as_update = self.update_install.take().filter(|(t, _)| *t == tag);
-                    let for_instance = self.instance_install.take_if(|t| *t == tag).is_some();
+                    let as_update = self.update_install.take().filter(|(t, _)| *t == requested);
+                    let for_instance = self.instance_install.take_if(|t| *t == requested).is_some();
                     if let (Ok(()), Some(started)) = (&result, self.install_started.take()) {
                         let name = if as_update.is_some() {
                             "launcher.update_ms"
@@ -1322,7 +1320,12 @@ impl Launcher {
                     }
                     match result {
                         Ok(()) => {
-                            if self.updates.horizon.as_ref().is_some_and(|r| r.tag == tag) {
+                            if self
+                                .updates
+                                .horizon
+                                .as_ref()
+                                .is_some_and(|r| r.tag == requested)
+                            {
                                 self.updates.horizon = None;
                             }
                             // An instance's own version leaves the other instances on theirs.
@@ -1638,6 +1641,7 @@ impl Launcher {
             return;
         }
         let (release, tx) = (release.clone(), self.tx.clone());
+        let fork = horizon_launcher::purview_game::supported() && self.instance_install.is_none();
         let tag = release.tag.clone();
         self.installing = Some((tag.clone(), 0.0));
         self.install_started = Some(Instant::now());
@@ -1647,8 +1651,16 @@ impl Launcher {
             let progress = |p| {
                 let _ = tx.send(Msg::Progress(tag.clone(), p));
             };
-            let result = backend::install(&release, progress);
-            let _ = tx.send(Msg::Installed(tag, result));
+            let result = if fork {
+                horizon_launcher::purview_game::install(progress)
+            } else {
+                backend::install(&release, progress).map(|()| tag.clone())
+            };
+            let (actual, result) = match result {
+                Ok(actual) => (actual, Ok(())),
+                Err(e) => (tag.clone(), Err(e)),
+            };
+            let _ = tx.send(Msg::Installed(tag, actual, result));
         });
     }
 
@@ -1891,9 +1903,22 @@ impl Launcher {
                 natives: false,
             });
         let mods_tx = self.mods.tx.clone();
+        let follow_purview = self.selected_instance().is_none_or(|i| i.version.is_none());
         std::thread::spawn(move || {
+            let requested = tag.clone();
+            let engine = if follow_purview && horizon_launcher::purview_game::follows(&tag) {
+                horizon_launcher::purview_game::install(|_| {})
+            } else {
+                Ok(tag)
+            };
+            let _ = tx.send(Msg::PurviewGameReady(requested, engine.clone()));
+            let Ok(tag) = engine else { return };
+            if backend::need_prepared(&tag).is_err() {
+                return;
+            }
             backend::complete_assets(&tag);
-            if let Some(auto) = auto {
+            if let Some(mut auto) = auto {
+                auto.level = Some(backend::mod_api_level(&tag));
                 let (lines, _) = mods_page::auto_update(&[auto]);
                 if !lines.is_empty() {
                     let _ = mods_tx.send(mods_page::Event::AutoUpdated(lines, Vec::new()));
@@ -2169,35 +2194,26 @@ fn version_tag(tag: &str) -> Div {
         )
 }
 
-/// Horizon's mark: two stems, their reflection below, and the horizon across in the accent.
+/// Purview's pixel P, drawn with the current theme's accent.
 fn mark(size: f32, t: &Theme) -> Div {
     let u = size / 16.;
-    let stem = |x: f32, y: f32, color: Hsla| {
+    let bar = |x: f32, y: f32, w: f32, h: f32| {
         div()
             .absolute()
             .left(px(x * u))
             .top(px(y * u))
-            .w(px(2. * u))
-            .h(px(4. * u))
-            .bg(color)
+            .w(px(w * u))
+            .h(px(h * u))
+            .bg(t.accent)
     };
     div()
         .relative()
         .flex_none()
         .size(px(size))
-        .child(stem(4., 3., t.ink))
-        .child(stem(10., 3., t.ink))
-        .child(stem(4., 8., t.ink.opacity(0.36)))
-        .child(stem(10., 8., t.ink.opacity(0.36)))
-        .child(
-            div()
-                .absolute()
-                .left(px(u))
-                .top(px(7. * u))
-                .w(px(14. * u))
-                .h(px(u))
-                .bg(t.accent),
-        )
+        .child(bar(3., 2., 2., 12.))
+        .child(bar(5., 2., 7., 2.))
+        .child(bar(11., 4., 2., 4.))
+        .child(bar(5., 8., 7., 2.))
 }
 
 /// The last thing the player did was press Tab: focused controls show a ring (a click focuses them
@@ -2935,7 +2951,6 @@ impl Launcher {
             },
         ));
         let items = self.instance_items(heading, cx);
-        let mut rows = items.len();
         let list = div()
             .flex()
             .flex_col()
@@ -2951,8 +2966,6 @@ impl Launcher {
         if !servers.is_empty() {
             list = list.child(heading(tr("SERVERS").into()));
         }
-        rows += servers.len();
-        let headings = 1 + usize::from(!servers.is_empty());
         for e in servers {
             let up = self.servers.is_up(&e.dir);
             let open = self.page == Page::Servers && self.servers.open.as_ref() == Some(&e.dir);
@@ -2983,185 +2996,6 @@ impl Launcher {
                     })),
             );
         }
-        let link = |id: &'static str, label: &'static str, icon: &'static str, url: String| {
-            let id = SharedString::from(id);
-            track_hover(
-                div()
-                    .id(id.clone())
-                    .relative()
-                    .flex()
-                    .items_center()
-                    .gap(px(10.))
-                    .h(px(32.))
-                    .px(px(8.))
-                    .cursor_pointer()
-                    .child(hover_layer(&id, shell::c(n.card_hi).opacity(0.5), 0., 0.))
-                    .child(
-                        div()
-                            .relative()
-                            .child(blocks::icon(icon, 16., shell::c(n.muted))),
-                    )
-                    .child(
-                        shell::text(theme::night::UI, shell::c(n.ink_soft))
-                            .relative()
-                            .child(label),
-                    )
-                    .on_click(move |_, _, cx| cx.open_url(&url)),
-                id,
-            )
-        };
-        let mut foot = div().mt_auto().flex().flex_col().gap(px(2.)).pt(px(12.));
-        let update = |line: String| {
-            plate::plate(&n)
-                .flex()
-                .flex_col()
-                .gap(px(8.))
-                .p(px(12.))
-                .mb(px(6.))
-                .child(
-                    shell::text(theme::night::UI, shell::c(n.ink))
-                        .relative()
-                        .child(line),
-                )
-        };
-        match &self.self_update {
-            SelfUpdate::Downloading(version, f) => {
-                foot = foot.child(
-                    update(trf(
-                        "Launcher {version}  {percent}%",
-                        &[
-                            ("version", version),
-                            ("percent", &format!("{:.0}", f * 100.)),
-                        ],
-                    ))
-                    .child(
-                        div()
-                            .relative()
-                            .flex()
-                            .child(progress_bar(Some((*f, *f)), &t)),
-                    ),
-                )
-            }
-            SelfUpdate::Ready(version) => {
-                foot = foot.child(
-                    update(tr("A new version is available").to_string())
-                        .child(
-                            shell::text(theme::night::UI, shell::c(n.ink_soft))
-                                .relative()
-                                .child(trf("Launcher {version}", &[("version", version)])),
-                        )
-                        .child(div().relative().flex().child(
-                            button("update-launcher", "Update", Kind::Primary, &t).on_click(
-                                cx.listener(|this, _: &ClickEvent, _, cx| {
-                                    this.apply_launcher_update(cx);
-                                    cx.notify();
-                                }),
-                            ),
-                        )),
-                )
-            }
-            SelfUpdate::Stuck(error) if !self.self_update_hidden => {
-                let why = self.launcher_update_help(error.as_deref());
-                let url = backend::download_page(&self.links.website);
-                foot = foot.child(
-                    update(tr("A new version is available").to_string())
-                        .child(
-                            shell::text(theme::night::UI, shell::c(n.ink_soft))
-                                .relative()
-                                .child(why),
-                        )
-                        .child(
-                            div()
-                                .relative()
-                                .flex()
-                                .flex_wrap()
-                                .gap(px(6.))
-                                .when(self.launcher_download_available(), |actions| {
-                                    actions.child(
-                                        button(
-                                            "download-launcher",
-                                            "Download again",
-                                            Kind::Primary,
-                                            &t,
-                                        )
-                                        .on_click(move |_, _, cx| cx.open_url(&url)),
-                                    )
-                                })
-                                .child(
-                                    button("dismiss-launcher-update", "Dismiss", Kind::Ghost, &t)
-                                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                            this.self_update_hidden = true;
-                                            cx.notify();
-                                        })),
-                                ),
-                        ),
-                )
-            }
-            _ => {}
-        }
-        // Sculk's card above the links: seen without scrolling, on every page but Servers, which shows
-        // its wide banner. Tall where the sidebar has the height for it besides the wordmark, its rows
-        // (52 high each, under headings of 40) and the links, compact otherwise. After a while on
-        // screen a "Hide" beside its label puts it away for good.
-        if self.page != Page::Servers && !self.settings.partner_hidden {
-            let free = f32::from(window.viewport_size().height)
-                - theme::TOPBAR
-                - 40. * headings as f32
-                - 52. * rows as f32
-                - 110.;
-            let mut side = div().relative().mb(px(8.)).child(partner::card(
-                "partner-side",
-                theme::SIDEBAR - 20.,
-                free < partner::TALL_HEIGHT,
-                &t,
-            ));
-            if self.settings.partner_seen_secs >= partner::SEEN_BEFORE_HIDE {
-                let hide = partner::hide_button("partner-hide", &t).on_click(cx.listener(
-                    |this, _: &ClickEvent, _, cx| {
-                        this.settings.partner_hidden = true;
-                        this.save_settings();
-                        cx.notify();
-                    },
-                ));
-                side = side.child(hide);
-            }
-            foot = foot.child(side);
-        }
-        if !self.links.sponsor.is_empty() {
-            foot = foot.child(link(
-                "sponsor",
-                tr("Sponsor"),
-                "heart",
-                self.links.sponsor.clone(),
-            ));
-        }
-        if !self.links.discord.is_empty() {
-            foot = foot.child(link(
-                "discord",
-                "Discord",
-                "message",
-                self.links.discord.clone(),
-            ));
-        }
-        if !self.links.website.is_empty() {
-            foot = foot.child(link(
-                "website",
-                tr("Website"),
-                "globe",
-                self.links.website.clone(),
-            ));
-        }
-        foot = foot.child(
-            shell::text(theme::night::CAPTION, shell::c(n.muted))
-                .id("launcher-version")
-                .px(px(8.))
-                .pt(px(6.))
-                .child(trf("Launcher {version}", &[("version", backend::VERSION)]))
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.version_clicked();
-                    cx.notify();
-                })),
-        );
         // Custom title bars carry the mark and name already.
         let brand = (!titlebar::draws_brand(window)).then(|| {
             div()
@@ -3175,7 +3009,7 @@ impl Launcher {
                 .child(
                     shell::text(theme::night::TITLE, shell::c(n.ink))
                         .font_family(theme::DISPLAY_FONT)
-                        .child("Horizon"),
+                        .child("Purview"),
                 )
         });
         shell::sidebar_plate(&t)
@@ -3190,7 +3024,6 @@ impl Launcher {
             .overflow_y_scroll()
             .children(brand)
             .child(list)
-            .child(foot)
     }
 
     /// Whether `event` is the press that just closed a menu from outside it (on the menu's
@@ -4052,7 +3885,16 @@ impl Launcher {
                     .child(index_row(
                         n + 8,
                         tr("Launcher"),
-                        Some(plain(&launcher)),
+                        Some(
+                            div()
+                                .id("launcher-version")
+                                .child(launcher)
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.version_clicked();
+                                    cx.notify();
+                                }))
+                                .into_any_element(),
+                        ),
                         launcher_action,
                         &t,
                     ))
@@ -4546,7 +4388,7 @@ impl Launcher {
             Some(SignInState::Starting | SignInState::Code(_) | SignInState::Working(_))
         );
         let detail = match &self.sign_in_state {
-            _ if !configured => div().child(tr(account::NOT_CONFIGURED)),
+            _ if !configured => self.microsoft_setup_controls(cx),
             Some(SignInState::Starting) => div().child(tr("Asking Microsoft…")),
             Some(SignInState::Working(phase)) => div().child(tr(phase.label())),
             Some(SignInState::Code(code)) => div()
@@ -5724,7 +5566,7 @@ fn page_after_startup(page: Page, data_folder_failed: bool) -> Page {
 fn menus() -> Vec<Menu> {
     vec![
         Menu {
-            name: "Horizon Launcher".into(),
+            name: "Purview".into(),
             items: vec![MenuItem::action("Quit Horizon Launcher", Quit)],
             disabled: false,
         },
@@ -6018,7 +5860,7 @@ mod tests {
     #[test]
     fn the_app_menu_has_quit() {
         let menus = super::menus();
-        assert_eq!(menus[0].name, "Horizon Launcher");
+        assert_eq!(menus[0].name, "Purview");
         assert!(matches!(
             &menus[0].items[0],
             gpui::MenuItem::Action { name, .. } if name == "Quit Horizon Launcher"

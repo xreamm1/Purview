@@ -1,4 +1,13 @@
-# Microsoft account sign-in and online-mode play
+# Purview: Microsoft account sign-in and online-mode play
+
+This fork currently has no registered Microsoft application ID. Browser sign-in requires the
+maintainer's public application registration and Minecraft API approval. In the launcher, choose
+**Setup instructions**, then **Paste application ID** to save that public ID. Do not paste a
+client secret or token. The existing browser device-code flow runs after configuration.
+
+For this fork, use the application name `Purview` and project URL
+`https://github.com/xreamm1/Purview` when following the registration steps below. References to
+the upstream maintainer describe the original project's registration, not a configured ID in this fork.
 
 Horizon signs players in with their Microsoft account in the launcher and joins online-mode
 (authenticated) servers like vanilla 26.3 does. The launcher plays only with an account that owns

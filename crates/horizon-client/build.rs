@@ -1,4 +1,4 @@
-//! Embeds Horizon's icon (`packaging/icons/horizon.ico`) in the Windows executables, as icon
+//! Embeds Horizon's icon (`packaging/icons/purview.ico`) in the Windows executables, as icon
 //! resource 1: Explorer and the task bar show it, and the window takes it as its icon.
 //! The optional Segment Heap manifest is embedded in the same resource compilation.
 fn main() {
@@ -8,7 +8,7 @@ fn main() {
     horizon_mod_api_gen::generate(&root, &out_dir, horizon_mod_api_gen::Target::Client)
         .expect("generating native mod API");
     let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    let ico = format!("{dir}/../../packaging/icons/horizon.ico");
+    let ico = format!("{dir}/../../packaging/icons/purview.ico");
     println!("cargo:rerun-if-changed={ico}");
     // The game's main thread gets 8 MB of stack on Windows as on macOS and Linux (Windows gives 1
     // MB): splitscreen builds a joining player's `Game`, ~67 KB, deep in the event loop.

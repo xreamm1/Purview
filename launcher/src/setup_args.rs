@@ -48,7 +48,9 @@ pub fn other_launcher_pids(tasklist_csv: &str, own: u32) -> Vec<u32> {
         .filter_map(|line| {
             let mut fields = line.trim().trim_matches('"').split("\",\"");
             let image = fields.next()?;
-            if !image.eq_ignore_ascii_case("horizon-launcher.exe") {
+            if !image.eq_ignore_ascii_case("purview.exe")
+                && !image.eq_ignore_ascii_case("horizon-launcher.exe")
+            {
                 return None;
             }
             fields.next()?.trim().parse::<u32>().ok()

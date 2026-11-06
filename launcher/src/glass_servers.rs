@@ -68,7 +68,6 @@ impl Launcher {
         );
         // Sculk's banner right under the server, where it is seen without scrolling past the
         // server's tabs (as before the glass look, under the page's actions).
-        page = page.children(self.glass_sculk(cx));
         if let Some(dir) = &open {
             page = page.child(self.glass_server_tabs(dir, &status, cx));
         }
@@ -772,46 +771,6 @@ impl Launcher {
             .when(players, |d| {
                 d.child(self.internet_invites(port_of(self), cx).relative())
             })
-    }
-
-    /// Sculk's banner (sponsor, not in the mockup) on a glass card: "Partner" as the cards' small
-    /// headings, Hide once it has been on screen a while, the banner Sculk made.
-    fn glass_sculk(&mut self, cx: &mut Context<Self>) -> Option<Div> {
-        if self.settings.partner_hidden {
-            return None;
-        }
-        let t = self.theme;
-        let width = 600.;
-        let mut head = div()
-            .relative()
-            .flex()
-            .items_center()
-            .justify_between()
-            .child(ui::card_heading(tr("Partner")));
-        if self.settings.partner_seen_secs >= partner::SEEN_BEFORE_HIDE {
-            head = head.child(
-                button("partner-servers-hide", "Hide", Kind::Ghost, &t)
-                    .h(px(28.))
-                    .px(px(10.))
-                    .text_size(px(13.))
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.settings.partner_hidden = true;
-                        this.save_settings();
-                        cx.notify();
-                    })),
-            );
-        }
-        Some(
-            glass::plate(radius::PANEL)
-                .mt(px(10.))
-                .flex()
-                .flex_col()
-                .gap(px(12.))
-                .w(px(width + 40.))
-                .p(px(20.))
-                .child(head)
-                .child(partner::banner_image("partner-servers", width, &t).relative()),
-        )
     }
 }
 
