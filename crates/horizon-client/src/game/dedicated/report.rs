@@ -380,6 +380,7 @@ impl Game<'_> {
             "mob_sampled_ticks": r.sampled_ticks,
             "chunk_workers": worker_jobs(&jobs, window_s),
             "network": network(&r.wire_start, &self.wire_bytes(), window_s),
+            "network_ingress": self.lan.as_ref().and_then(|h| h.hub.lan.shared.events.stats()),
             "overhead": overhead(&r, mob_samples, span_ns, mob_ns),
             "players": players,
             "levels": self.report_levels(),

@@ -26,6 +26,7 @@ pub mod guest;
 pub mod handoff;
 pub mod hub;
 pub mod import;
+mod ingress;
 mod io_pool;
 pub mod menu;
 pub mod playerdata;
@@ -42,6 +43,7 @@ use horizon_protocol::{
     GAME_VERSION, PROTOCOL_VERSION, crypto::uuid_string, packets::configuration::ClientInformation,
     text::translatable,
 };
+pub use ingress::{EventSender, IngressStats};
 use std::{
     collections::HashMap,
     io,
@@ -49,7 +51,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering},
-        mpsc::{Receiver, Sender, channel},
+        mpsc::{Receiver, channel},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -353,7 +355,7 @@ impl SecureChat {
 pub struct Shared {
     /// What the next login is sent; `PlayerList.reloadResources` swaps it.
     sync: Mutex<Arc<data::SyncData>>,
-    pub events: Sender<NetEvent>,
+    pub events: EventSender,
     pub config: NetConfig,
     motd: Mutex<String>,
     max_players: AtomicUsize,
@@ -572,7 +574,7 @@ pub fn base64(data: &[u8]) -> String {
 /// A running LAN server.
 pub struct Lan {
     pub shared: Arc<Shared>,
-    events: Receiver<NetEvent>,
+    events: ingress::EventReceiver,
     pub port: u16,
     listener: Option<JoinHandle<()>>,
     /// Stops the accept loop alone: local connections stay.
@@ -592,7 +594,7 @@ impl Lan {
     }
     /// ServerConnectionListener.startTcpServerListener with a configuration.
     pub fn start_with(sync: Arc<data::SyncData>, config: NetConfig) -> io::Result<Self> {
-        let (tx, events) = channel();
+        let (tx, events) = ingress::channel();
         let (listen, port, announce) = (config.listen, config.port, config.announce);
         let hide_online_players = config.hide_online_players;
         let enable_status = config.enable_status;
@@ -710,9 +712,9 @@ impl Lan {
             })?;
         Ok(client)
     }
-    /// Everything the connection threads reported since the last call.
+    /// A bounded batch of what the connection threads reported, in arrival order.
     pub fn poll(&self) -> Vec<NetEvent> {
-        self.events.try_iter().collect()
+        self.events.poll()
     }
     pub fn stop(&mut self) {
         self.shared.stop.store(true, Ordering::Relaxed);

@@ -1384,7 +1384,13 @@ impl io_pool::Session for PlayConn {
                 let event = NetEvent::Packet(self.conn, Box::new(p), payload.len());
                 match self.shared.events.send(event) {
                     Ok(()) => Verdict::Go,
-                    Err(_) => Verdict::Close("server closed".to_owned()),
+                    Err(std::sync::mpsc::TrySendError::Full(_)) => kick((
+                        translatable("disconnect.exceeded_packet_rate", &[]),
+                        "too many packets waiting for the game thread".to_owned(),
+                    )),
+                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                        Verdict::Close("server closed".to_owned())
+                    }
                 }
             }
             // A malformed packet disconnects like vanilla's decoder exception.
@@ -1629,6 +1635,75 @@ impl KeepAliveWatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ingress_full_kicks_instead_of_reporting_a_closed_server() -> std::io::Result<()> {
+        let lan = crate::lan::Lan::start_with(
+            Arc::new(SyncData::empty()),
+            crate::lan::NetConfig {
+                listen: false,
+                announce: false,
+                ..crate::lan::NetConfig::loopback(0, String::new(), 8)
+            },
+        )?;
+        for _ in 0..8_000 {
+            assert!(
+                lan.shared
+                    .events
+                    .send(NetEvent::Packet(
+                        1,
+                        Box::new(play::Serverbound::ClientTickEnd(Empty)),
+                        0,
+                    ))
+                    .is_ok()
+            );
+        }
+        let watch = Arc::new(KeepAliveWatch {
+            start: Instant::now(),
+            alive: Arc::new(AtomicI64::new(-1)),
+        });
+        let mut session = PlayConn {
+            conn: 1,
+            shared: lan.shared.clone(),
+            uuid: 0,
+            name: String::new(),
+            required_pack: false,
+            rate: None,
+            latency: Arc::new(AtomicI32::new(0)),
+            sent_at: None,
+            next_keep_alive: watch.start + KEEP_ALIVE_EVERY,
+            watch,
+            counted: None,
+        };
+        let expected = play::Clientbound::Disconnect(cfg::Disconnect {
+            reason: translatable("disconnect.exceeded_packet_rate", &[]),
+        })
+        .encode();
+        match session.packet(
+            horizon_protocol::ids::play::serverbound::CLIENT_TICK_END,
+            Vec::new(),
+        ) {
+            io_pool::Verdict::Kick(_, body) => assert_eq!(body, expected),
+            _ => panic!("full ingress must send the packet-rate disconnect"),
+        }
+        assert_eq!(lan.poll().len(), 4_096);
+        assert!(matches!(
+            session.packet(
+                horizon_protocol::ids::play::serverbound::CLIENT_TICK_END,
+                Vec::new(),
+            ),
+            io_pool::Verdict::Go
+        ));
+        drop(lan);
+        assert!(matches!(
+            session.packet(
+                horizon_protocol::ids::play::serverbound::CLIENT_TICK_END,
+                Vec::new(),
+            ),
+            io_pool::Verdict::Close(_)
+        ));
+        Ok(())
+    }
 
     /// Logs in through `c` and answers the `LoginFinished` profile.
     fn login_profile(mut c: Connection, name: &str) -> login::GameProfile {
