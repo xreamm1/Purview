@@ -21,7 +21,7 @@ impl Launcher {
             .flex()
             .gap(px(8.))
             .child(left.flex_1().min_w_0().p(px(24.)))
-            .child(right.flex_none().w(px(400.)))
+            .child(right.flex_none().w(gpui::relative(0.42)))
     }
 
     /// The player now, the offline names and the field to add one.
@@ -39,15 +39,11 @@ impl Launcher {
                     .unwrap_or_default(),
                 (Tone::Live, tr("Microsoft account · online servers too")),
             ),
-            Player::Offline(name) => (
-                None,
-                name.clone(),
-                (Tone::Off, tr("Offline · single player and LAN worlds")),
-            ),
+            Player::Offline(name) => (None, name.clone(), (Tone::Off, tr("Offline"))),
             Player::GameName => (
                 None,
                 self.offline_name.clone().unwrap_or_else(|| "Player".into()),
-                (Tone::Off, tr("Offline · single player and LAN worlds")),
+                (Tone::Off, tr("Offline")),
             ),
         };
         let head = div()

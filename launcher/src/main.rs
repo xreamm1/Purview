@@ -13,7 +13,6 @@ mod console;
 mod console_page;
 mod cull;
 mod datapacks_page;
-mod dev_options;
 mod export_page;
 mod frame;
 mod game_tools;
@@ -381,10 +380,8 @@ struct Launcher {
     owner: Option<bool>,
     /// Play was refused (or Home's Sign in pressed): the owner gate's screen is open.
     owner_screen_open: bool,
-    /// Clicks on the sidebar's launcher version, and whether they revealed the developer options
-    /// (`dev_options`) for this run.
-    dev_clicks: u8,
-    dev_options: bool,
+    owner_screen_preview: bool,
+    copied_sign_in_code: Option<String>,
     /// The game is waiting for its session (a token renewal), or a Java instance for its files
     /// and Java (`start_java`), before it starts.
     starting_client: Option<String>,
@@ -665,9 +662,9 @@ impl Launcher {
             sign_in_state: None,
             keychain: None,
             owner: None,
-            owner_screen_open: false,
-            dev_clicks: 0,
-            dev_options: false,
+            owner_screen_open: owner_page::sign_in_preview(),
+            owner_screen_preview: owner_page::sign_in_preview(),
+            copied_sign_in_code: None,
             starting_client: None,
             play_when_prepared: None,
             friend_code: line_edit::LineEdit::new(String::new(), 256, 32),
@@ -1209,7 +1206,12 @@ impl Launcher {
                     self.load_auth_statuses(false);
                     if let Some(tag) = self.starting_client.take() {
                         let mut cmd = backend::client_command(&tag);
-                        let account::GameSession { file, offline, env } = match session {
+                        let account::GameSession {
+                            file,
+                            offline,
+                            name,
+                            env,
+                        } = match session {
                             Ok(pass) => pass,
                             Err(account::NoOwner) => {
                                 self.owner = Some(false);
@@ -1221,10 +1223,6 @@ impl Launcher {
                                 continue;
                             }
                         };
-                        // Past the gate by the developer option alone is no owner.
-                        if !self.settings.dev_offline {
-                            self.owner = Some(true);
-                        }
                         if let Some(file) = file {
                             cmd.arg("--session-file").arg(file);
                         }
@@ -1237,10 +1235,9 @@ impl Launcher {
                         }
                         self.accounts = Accounts::load();
                         // An offline name the player picked (the quick switch).
-                        if let Some(name) = self.accounts.name_arg() {
+                        if let Some(name) = name {
                             cmd.arg("--name").arg(name);
                         }
-                        cmd.envs(self.accounts.look_env());
                         // A pack's Play button plays that pack; Play plays the selected instance.
                         let (profile, run) = match self.starting_pack.take() {
                             Some(work) => {
@@ -1566,10 +1563,6 @@ impl Launcher {
                     self.owner = Some(true);
                     self.owner_screen_open = false;
                     self.client_error = None;
-                    if !self.settings.owner_notice_seen {
-                        self.settings.owner_notice_seen = true;
-                        self.save_settings();
-                    }
                 }
                 changed = true;
             }
@@ -1641,7 +1634,6 @@ impl Launcher {
             return;
         }
         let (release, tx) = (release.clone(), self.tx.clone());
-        let fork = horizon_launcher::purview_game::supported() && self.instance_install.is_none();
         let tag = release.tag.clone();
         self.installing = Some((tag.clone(), 0.0));
         self.install_started = Some(Instant::now());
@@ -1651,16 +1643,8 @@ impl Launcher {
             let progress = |p| {
                 let _ = tx.send(Msg::Progress(tag.clone(), p));
             };
-            let result = if fork {
-                horizon_launcher::purview_game::install(progress)
-            } else {
-                backend::install(&release, progress).map(|()| tag.clone())
-            };
-            let (actual, result) = match result {
-                Ok(actual) => (actual, Ok(())),
-                Err(e) => (tag.clone(), Err(e)),
-            };
-            let _ = tx.send(Msg::Installed(tag, actual, result));
+            let result = backend::install(&release, progress);
+            let _ = tx.send(Msg::Installed(tag.clone(), tag, result));
         });
     }
 
@@ -1891,7 +1875,6 @@ impl Launcher {
         self.starting_client = Some(tag.clone());
         self.play_pressed = Some(Instant::now());
         let tx = self.tx.clone();
-        let offline_without_owner = self.settings.dev_offline;
         // Registry mods update before the game reads them (`horizon::auto`); native mods only
         // at start, where a build can follow.
         let auto = self
@@ -1907,7 +1890,15 @@ impl Launcher {
         std::thread::spawn(move || {
             let requested = tag.clone();
             let engine = if follow_purview && horizon_launcher::purview_game::follows(&tag) {
-                horizon_launcher::purview_game::install(|_| {})
+                match horizon_launcher::purview_game::try_install(|_| {}) {
+                    Ok(Some(actual)) => Ok(actual),
+                    Ok(None) => Ok(tag),
+                    Err(error) => {
+                        // The installed engine can still play if the update service is unreachable.
+                        let _ = tx.send(Msg::Line(Job::Client, error));
+                        Ok(tag)
+                    }
+                }
             } else {
                 Ok(tag)
             };
@@ -1924,7 +1915,7 @@ impl Launcher {
                     let _ = mods_tx.send(mods_page::Event::AutoUpdated(lines, Vec::new()));
                 }
             }
-            let session = account::session_for_game(&backend::game_home(), offline_without_owner);
+            let session = account::session_for_game(&backend::game_home());
             let _ = tx.send(Msg::Session(session));
         });
     }
@@ -2015,7 +2006,13 @@ impl Launcher {
 
     /// Generic Add account and targeted re-sign-in share the launcher-owned device-code flow.
     fn start_sign_in(&mut self) {
-        self.begin_sign_in(None);
+        self.owner_screen_preview = false;
+        if account::client_id().is_some() {
+            self.begin_sign_in(None);
+        } else {
+            self.cancel_sign_in();
+            self.owner_screen_open = true;
+        }
     }
 
     fn re_sign_in(&mut self, uuid: &str) {
@@ -2026,6 +2023,7 @@ impl Launcher {
 
     fn begin_sign_in(&mut self, target: Option<account::Account>) {
         self.cancel_sign_in();
+        self.owner_screen_open = true;
         self.sign_in = Some(match &target {
             Some(account) => SignIn::start_for(account.clone()),
             None => SignIn::start(),
@@ -2035,6 +2033,7 @@ impl Launcher {
     }
 
     fn cancel_sign_in(&mut self) {
+        self.copied_sign_in_code = None;
         if let Some(old) = self.sign_in.take() {
             old.cancel();
         }
@@ -2194,26 +2193,35 @@ fn version_tag(tag: &str) -> Div {
         )
 }
 
-/// Purview's pixel P, drawn with the current theme's accent.
+/// The launcher mark: two stems, their reflection below, and the horizon across in the accent.
 fn mark(size: f32, t: &Theme) -> Div {
     let u = size / 16.;
-    let bar = |x: f32, y: f32, w: f32, h: f32| {
+    let stem = |x: f32, y: f32, color: Hsla| {
         div()
             .absolute()
             .left(px(x * u))
             .top(px(y * u))
-            .w(px(w * u))
-            .h(px(h * u))
-            .bg(t.accent)
+            .w(px(2. * u))
+            .h(px(4. * u))
+            .bg(color)
     };
     div()
         .relative()
         .flex_none()
         .size(px(size))
-        .child(bar(3., 2., 2., 12.))
-        .child(bar(5., 2., 7., 2.))
-        .child(bar(11., 4., 2., 4.))
-        .child(bar(5., 8., 7., 2.))
+        .child(stem(4., 3., t.ink))
+        .child(stem(10., 3., t.ink))
+        .child(stem(4., 8., t.ink.opacity(0.36)))
+        .child(stem(10., 8., t.ink.opacity(0.36)))
+        .child(
+            div()
+                .absolute()
+                .left(px(u))
+                .top(px(7. * u))
+                .w(px(14. * u))
+                .h(px(u))
+                .bg(t.accent),
+        )
 }
 
 /// The last thing the player did was press Tab: focused controls show a ring (a click focuses them
@@ -3210,10 +3218,9 @@ impl Launcher {
         let left = self.download_left();
         let steps = self.preparing.then(|| self.steps(&version, left));
 
-        // Not prepared: an owner can have Horizon download Minecraft from Mojang; without an
-        // owner there is nothing to play, so signing in comes first.
+        // Preparation can use a local installation. Mojang downloads require ownership.
         let first = (!prepared && !self.preparing)
-            .then_some(self.owner_shown())
+            .then_some(self.owner)
             .flatten();
         // No launcher folder with Minecraft on this computer: an owner needs none.
         let no_install = self.settings.minecraft_dir.is_none();
@@ -3228,7 +3235,7 @@ impl Launcher {
                 &[("version", &version)],
             ),
             Some(false) => trf(
-                "Not prepared. Sign in with the Microsoft account that owns Minecraft {version} first.",
+                "Not prepared. Horizon needs the files of your own Minecraft {version}.",
                 &[("version", &version)],
             ),
             None => backend::resources_summary(prepared, !silent, &version),
@@ -3287,12 +3294,14 @@ impl Launcher {
                         cx.notify();
                     })),
                 ),
-            Some(false) => div().child(microsoft::sign_in_button("prepare-sign-in", &t).on_click(
-                cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.sign_in_to_play();
-                    cx.notify();
-                }),
-            )),
+            Some(false) => div().flex().gap(px(8.)).child(prepare).child(
+                microsoft::sign_in_button("prepare-sign-in", &t).on_click(cx.listener(
+                    |this, _: &ClickEvent, _, cx| {
+                        this.start_sign_in();
+                        cx.notify();
+                    },
+                )),
+            ),
             None => div().child(prepare),
         };
         let owner = self.owner == Some(true);
@@ -3360,49 +3369,25 @@ impl Launcher {
                 &t,
             )),
         };
-        // The top bar shows who plays; a row only when there is something to do about it: no
-        // account that owns the game (Play needs one), or offline. The glass look's top bar has
-        // Sign in with Microsoft and says Offline itself.
-        if !t.glass {
-            if self.owner_shown() == Some(false) {
-                rows = rows.child(index_row(
-                    5,
-                    tr("Microsoft account"),
-                    Some(
-                        div()
-                            .child(format!("{}.", tr(account::NEEDS_OWNER)))
-                            .into_any_element(),
-                    ),
-                    Some(
-                        microsoft::sign_in_button("gate-sign-in", &t)
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.sign_in_to_play();
-                                cx.notify();
-                            }))
-                            .into_any_element(),
-                    ),
-                    &t,
-                ));
-            } else if self.accounts.selected().is_none() && account::client_id().is_some() {
-                rows = rows.child(index_row(
-                    5,
-                    tr("Playing offline"),
-                    Some(
-                        div()
-                            .child(tr("Online servers need a Microsoft account."))
-                            .into_any_element(),
-                    ),
-                    Some(
-                        button("accounts", "Accounts…", Kind::Ghost, &t)
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.go(Page::Settings);
-                                cx.notify();
-                            }))
-                            .into_any_element(),
-                    ),
-                    &t,
-                ));
-            }
+        if !t.glass && self.accounts.selected().is_none() {
+            rows = rows.child(index_row(
+                5,
+                tr("Playing offline"),
+                Some(
+                    div()
+                        .child(tr("Online servers need a Microsoft account."))
+                        .into_any_element(),
+                ),
+                Some(
+                    button("accounts", "Accounts…", Kind::Ghost, &t)
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.go(Page::Settings);
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                ),
+                &t,
+            ));
         }
 
         // The glass look's head (the mockup's `HomeView`) replaces the banner; the preparation's
@@ -3881,7 +3866,7 @@ impl Launcher {
                     .child(group("AI", "terminal"))
                     .child(self.no_ai_row(n + 6, cx))
                     .child(group("About", "info-box"))
-                    .child(index_row(n + 7, "Horizon", Some(plain(&horizon)), horizon_action, &t))
+                    .child(index_row(n + 7, "Purview", Some(plain(&horizon)), horizon_action, &t))
                     .child(index_row(
                         n + 8,
                         tr("Launcher"),
@@ -3889,10 +3874,6 @@ impl Launcher {
                             div()
                                 .id("launcher-version")
                                 .child(launcher)
-                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                    this.version_clicked();
-                                    cx.notify();
-                                }))
                                 .into_any_element(),
                         ),
                         launcher_action,
@@ -3934,7 +3915,6 @@ impl Launcher {
             )
             .child(self.collection_section(cx))
             .children(self.agents_section(cx))
-            .children(self.dev_options_section(cx))
     }
 
     /// The warning before a native build: what the mods can do and which mods. The build starts
@@ -4409,9 +4389,9 @@ impl Launcher {
                 div().child(trf("Signed in as {name}.", &[("name", &a.name)]))
             }
             Some(SignInState::Done(Err(e))) => div().text_color(t.danger).child(e.clone()),
-            None if self.accounts.accounts.is_empty() => div().child(tr(
-                "Horizon needs a Microsoft account that owns Minecraft: Java Edition, like other launchers. It also plays online servers with your name and skin.",
-            )),
+            None if self.accounts.accounts.is_empty() => {
+                div().child(tr("Online servers need a Microsoft account."))
+            }
             None => div().child(tr("Add another account.")),
         };
         let detail = if let Some(target) = &self.sign_in_target {
@@ -4445,14 +4425,17 @@ impl Launcher {
                     .flex()
                     .gap(px(4.))
                     .child(
-                        button("sign-in-copy", "Copy code", Kind::Secondary, &t).on_click(
-                            move |_, _, cx| {
-                                copy_to_clipboard(
-                                    cx,
-                                    gpui::ClipboardItem::new_string(user_code.clone()),
-                                )
+                        button(
+                            "sign-in-copy",
+                            self.sign_in_copy_label(&user_code),
+                            Kind::Secondary,
+                            &t,
+                        )
+                        .on_click(cx.listener(
+                            move |this, _: &ClickEvent, window, cx| {
+                                this.copy_sign_in_code(&user_code, window, cx);
                             },
-                        ),
+                        )),
                     )
                     .child(
                         button("sign-in-open", "Open link", Kind::Secondary, &t)
@@ -5410,7 +5393,7 @@ impl Render for Launcher {
                 .line_height(px(theme::WORDMARK.px * 0.5))
                 .font_weight(FontWeight::BOLD)
                 .text_color(t.ink)
-                .children("HORIZON".chars().enumerate().map(|(i, c)| {
+                .children("PURVIEW".chars().enumerate().map(|(i, c)| {
                     let at = held - i as f32 * theme::STAGGER.as_secs_f32() * 1.5;
                     let p = ease_out_cubic(at / theme::ENTER.as_secs_f32());
                     div()
@@ -5567,7 +5550,7 @@ fn menus() -> Vec<Menu> {
     vec![
         Menu {
             name: "Purview".into(),
-            items: vec![MenuItem::action("Quit Horizon Launcher", Quit)],
+            items: vec![MenuItem::action("Quit Purview", Quit)],
             disabled: false,
         },
         Menu {
@@ -5762,21 +5745,21 @@ mod tests {
     fn a_press_on_a_sidebar_row_opens_its_menu_or_closes_it() {
         let open = |id: &str| Some((id.to_string(), false));
         assert_eq!(
-            super::row_menu_after_press(None, "Horizon"),
-            open("Horizon")
+            super::row_menu_after_press(None, "Purview"),
+            open("Purview")
         );
         assert_eq!(
-            super::row_menu_after_press(open("Other"), "Horizon"),
-            open("Horizon")
+            super::row_menu_after_press(open("Other"), "Purview"),
+            open("Purview")
         );
         assert_eq!(
-            super::row_menu_after_press(open("Horizon"), "Horizon"),
+            super::row_menu_after_press(open("Purview"), "Purview"),
             None
         );
         // A Delete… already pressed on another row does not carry over.
         assert_eq!(
-            super::row_menu_after_press(Some(("Other".into(), true)), "Horizon"),
-            open("Horizon")
+            super::row_menu_after_press(Some(("Other".into(), true)), "Purview"),
+            open("Purview")
         );
     }
 
@@ -5863,7 +5846,7 @@ mod tests {
         assert_eq!(menus[0].name, "Purview");
         assert!(matches!(
             &menus[0].items[0],
-            gpui::MenuItem::Action { name, .. } if name == "Quit Horizon Launcher"
+            gpui::MenuItem::Action { name, .. } if name == "Quit Purview"
         ));
     }
 

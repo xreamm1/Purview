@@ -9,17 +9,15 @@ For this fork, use the application name `Purview` and project URL
 `https://github.com/xreamm1/Purview` when following the registration steps below. References to
 the upstream maintainer describe the original project's registration, not a configured ID in this fork.
 
-Horizon signs players in with their Microsoft account in the launcher and joins online-mode
-(authenticated) servers like vanilla 26.3 does. The launcher plays only with an account that owns
-Minecraft: Java Edition ([the owner gate](#the-owner-gate)); offline names, LAN and offline-mode
-servers play behind it. This note is the design, the status of each part and what Ludovic has to
-register.
+Purview starts with an offline profile. Choose **Offline profile** in the launcher's account
+settings to save a name, then switch names from the top bar. Offline profiles work in single
+player and on servers that allow offline connections. Prepare the game's resources from a local
+Minecraft installation, or sign in with an account that owns Minecraft: Java Edition to download
+them from Mojang and join online-mode servers.
 
-## What Ludovic registers (needs his accounts)
+## Microsoft application registration
 
-Nothing below can be done by an agent: the app registrations belong to Ludovic. A build without
-the client ID can't sign in, so its launcher can't start the game ("This build of the launcher has
-no Microsoft sign-in"); release builds have it.
+A build without a client ID can play offline with prepared resources.
 
 1. **Azure app registration** (https://portal.azure.com → Microsoft Entra ID → App registrations →
    New registration):
@@ -75,34 +73,13 @@ All requests use HTTPS and JSON except the two OAuth calls (form-encoded):
 7. **Profile**: `GET https://api.minecraftservices.com/minecraft/profile`: UUID, name, skins, capes.
    404 = owns the game but has no profile yet ("Create your Minecraft profile on minecraft.net first").
 
-## The owner gate
+## Ownership and sessions
 
-Decided 2026-10-27 (Ludovic, after a modder's suggestion): like other launchers, Horizon's
-launcher starts the game only while an account in it owns Java Edition. Offline play stays
-possible; the launcher just doesn't offer it on its own.
-
-- **Play needs an owner.** Every Play (Home, instances and packs, `horizon-launcher play`,
-  `modpack play`, the MCP's `play`) asks `account::launch` first. It asks the Minecraft services
-  again for each account, the selected one first, until one owns the game: the token renewal
-  (below) if due, then entitlements and profile. Without an owner the game doesn't start and Play
-  says "Sign in with a Microsoft account that owns Minecraft: Java Edition to play", with Sign in.
-- **The window says it once.** A player without an owner (one who played offline until now) sees
-  the gate's screen once when the launcher opens: why Horizon needs the account ("like other
-  launchers"), that worlds, offline names and settings stay where they are, and Sign in, which shows
-  the device code on the same screen. It comes back whenever Play is refused; Not now closes it,
-  and Home keeps a Sign in row (`launcher/src/owner_page.rs`).
-- **The answer lives with the tokens.** Each account's keychain item keeps the last answer
-  (`owns`), so accounts.json can't say yes. Where there is no keychain the answer sits in the
-  secrets file with the tokens; a player can edit that file, as they can write keychain items with
-  `secret-tool` or Keychain Access. With no network (or a sign-in that can't be renewed) the
-  last answer stands: being offline never blocks a player who passed before, and the game starts
-  without a session, offline. An answer of "doesn't own" (or no profile) blocks at once.
-- **Offline names play behind an owner.** They can be added and played only while an owning
-  account is signed in. Signing the last one out keeps them, and they play again once one is back.
-- **Who isn't affected:** the game binary itself (`horizon-client`, `horizon-ctl launch`, the
-  harnesses, CI), the dedicated server and `horizon-server`, the website. There is no bypass flag:
-  the launcher's tests use accounts in a memory store (`MemoryStore`, and `HORIZON_NO_KEYCHAIN`
-  for the CLI and MCP tests, which then have no owner).
+An offline profile starts without a Microsoft session. When a Microsoft account is selected, the
+launcher checks ownership before starting the game. The keychain stores the last ownership answer
+with the tokens. If Microsoft is unreachable, an account with cached ownership can still start
+offline. Servers that require online-mode authentication refuse connections without a valid
+Microsoft session. Downloading Mojang's files also requires a verified owner.
 
 ## Downloading the game for an owner
 

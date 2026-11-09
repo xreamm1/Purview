@@ -6,7 +6,6 @@
 use super::{Game, Mining, Screen, minecarts::CartKind};
 use horizon_client::{
     Result,
-    attack_strength::HeldStack,
     first_person::{Hand, HandWorld, Hit, SwingAnimation, UseResult, swing_duration},
     items::ItemStack,
 };
@@ -193,6 +192,7 @@ impl Game<'_> {
         let fatigue = effects.amplifier("mining_fatigue");
         let duration = swing_duration(animation, dig_speed, fatigue);
         if self.swing.start_if_able(hand, animation, duration) {
+            self.main_hand_swing_slot = (hand == Hand::Main).then_some(self.selected);
             self.swings_started += 1;
         }
     }
@@ -487,13 +487,16 @@ impl Game<'_> {
             self.sway.tick_wrapped(self.pitch, self.yaw);
         }
         self.swing.tick();
+        if self.main_hand_swing_slot != Some(self.selected) {
+            self.main_hand_swing_slot = None;
+        }
         let main = self.inventory[self.selected].clone();
         // Player.tick: a different item resets the attack strength, and
         // detectEquipmentUpdates gives the player its modifiers.
-        if self.hand_strength.tick(main.as_ref().map(|s| HeldStack {
-            item: s.item.to_string(),
-            rest: format!("{} {} {:?}", s.count, s.damage, s.extra),
-        })) {
+        if self
+            .hand_strength
+            .tick_item(main.as_ref().map(|stack| stack.item.as_ref()))
+        {
             self.attack_ticks = 0;
             self.apply_equipment();
         }

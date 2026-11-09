@@ -385,7 +385,7 @@ impl Launcher {
         let mut summary = match kind {
             NewKind::Horizon => match self.draft_horizon() {
                 Some(tag) => format!("Horizon · {}", version_label(&tag)),
-                None => "Horizon".into(),
+                None => "Purview".into(),
             },
             NewKind::Vanilla => format!("{} · {minecraft}", tr("Vanilla")),
             NewKind::Modded => format!("{} · {minecraft}", loader.name()),
@@ -419,7 +419,7 @@ impl Launcher {
             let (id, title, note) = match k {
                 NewKind::Horizon => (
                     "horizon",
-                    tr("Horizon"),
+                    "Purview",
                     tr("Minecraft rebuilt in Rust, with Horizon mods").to_string(),
                 ),
                 NewKind::Vanilla => (
@@ -860,7 +860,7 @@ impl Launcher {
         let selected = self.selected_instance().cloned();
         let from = selected
             .as_ref()
-            .map_or_else(|| "Horizon".into(), |i| i.name.clone());
+            .map_or_else(|| "Purview".into(), |i| i.name.clone());
         let icon = match &selected {
             Some(i) => self.glass_instance_icon(i, 36.),
             None => self.horizon_mark(36.),

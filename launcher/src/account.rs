@@ -1517,9 +1517,6 @@ pub enum Player {
     GameName,
 }
 
-const OFFLINE_NEEDS_OWNER: &str =
-    "Offline names need a Microsoft account that owns Minecraft: Java Edition in the launcher.";
-
 /// The secrets an account keeps in `store`, if it still has them there.
 fn secrets_in(store: &dyn SecretStore, uuid: &str) -> Option<Secrets> {
     store
@@ -1598,7 +1595,7 @@ impl Accounts {
         Ok(())
     }
     /// Whether an account here owned the game at its last check (the keychain's answer, no
-    /// request): what Play and offline names need.
+    /// request): used to show the available preparation options.
     pub fn has_owner(&self, store: &dyn SecretStore) -> bool {
         // The selected account first: it owning the game ends the search after one account's
         // item — every account's item read can ask for the keychain (macOS, #4912).
@@ -1617,21 +1614,8 @@ impl Accounts {
         }
     }
 
-    /// Plays as `who`: an account, an offline name (kept, only beside an account that owns the
-    /// game), or the game's own name.
-    pub fn play_as(&mut self, store: &dyn SecretStore, who: Player) -> Result<(), String> {
-        self.play_as_with(store, who, false)
-    }
-
-    /// [`Self::play_as`], where `offline_without_owner` (the window's hidden developer option,
-    /// `backend::Settings::dev_offline`) lets an offline name play without an account that owns
-    /// the game.
-    pub fn play_as_with(
-        &mut self,
-        store: &dyn SecretStore,
-        who: Player,
-        offline_without_owner: bool,
-    ) -> Result<(), String> {
+    /// Selects a saved Microsoft account, an offline profile, or the game's generated name.
+    pub fn play_as(&mut self, who: Player) -> Result<(), String> {
         match who {
             Player::Microsoft(uuid) => {
                 if !self.accounts.iter().any(|a| a.uuid == uuid) {
@@ -1640,9 +1624,6 @@ impl Accounts {
                 self.selected = Some(uuid);
             }
             Player::Offline(name) => {
-                if !offline_without_owner && !self.has_owner(store) {
-                    return Err(OFFLINE_NEEDS_OWNER.into());
-                }
                 let name = self.add_offline(&name)?;
                 self.selected = None;
                 self.offline_selected = Some(name);
@@ -1779,7 +1760,7 @@ pub fn take_unsaved() -> Option<String> {
     UNSAVED.lock().ok()?.take()
 }
 
-/// The owner gate: the game starts only while an account in the launcher owns Minecraft: Java
+/// Verifies that a saved Microsoft account owns Minecraft: Java
 /// Edition. The accounts are asked again, the selected one first, until one owns it; each keeps
 /// the answer in the keychain. An account that gets no answer (no network) keeps its last one, so
 /// being offline never blocks a player who passed before, while "doesn't own" blocks at once.
@@ -1856,20 +1837,17 @@ pub fn launch(
     }
 }
 
-/// The owner gate before the game starts. With the window's hidden developer option
-/// (`backend::Settings::dev_offline`, `offline_without_owner`) no owner is no refusal: the game
-/// starts offline, without a session and without an `owner`. Downloads never come through here:
-/// `backend::download_for_owner` asks [`launch`] itself, so the option never downloads the game.
-pub fn launch_for_game(
+/// Offline profiles start without contacting Microsoft's services. A selected Microsoft
+/// account still goes through the ownership check.
+fn launch_for_game(
     ep: &Endpoints,
     client_id: Option<&str>,
     store: &dyn SecretStore,
     accounts: &mut Accounts,
-    offline_without_owner: bool,
 ) -> Result<Launch, NoOwner> {
-    match launch(ep, client_id, store, accounts) {
-        Err(NoOwner) if offline_without_owner => Ok(Launch::default()),
-        pass => pass,
+    match accounts.player() {
+        Player::Microsoft(_) => launch(ep, client_id, store, accounts),
+        Player::Offline(_) | Player::GameName => Ok(Launch::default()),
     }
 }
 
@@ -2101,26 +2079,22 @@ pub struct GameSession {
     pub file: Option<PathBuf>,
     /// Why the account plays offline this time, if it does.
     pub offline: Option<String>,
-    /// The other accounts' sessions, for splitscreen players (`account_sessions`).
+    /// The offline profile selected for this launch.
+    pub name: Option<String>,
+    /// The offline profile's look and any splitscreen sessions.
     pub env: Vec<(&'static str, String)>,
 }
 
-/// The owner gate for the game about to start, then the selected account's session in a file
-/// for it, and the other accounts' for its splitscreen players. `offline_without_owner`: see
-/// [`launch_for_game`].
-pub fn session_for_game(
-    game_home: &Path,
-    offline_without_owner: bool,
-) -> Result<GameSession, NoOwner> {
+/// The selected account's session, if online, and any splitscreen sessions.
+pub fn session_for_game(game_home: &Path) -> Result<GameSession, NoOwner> {
     let mut accounts = Accounts::load();
     let pass = launch_for_game(
         &Endpoints::live(),
         client_id().as_deref(),
         store(),
         &mut accounts,
-        offline_without_owner,
     )?;
-    let env = split_sessions(
+    let mut env = split_sessions(
         game_home,
         &mut accounts,
         pass.session.as_ref().map(|(a, _)| a.uuid.as_str()),
@@ -2128,7 +2102,10 @@ pub fn session_for_game(
     if let Err(e) = accounts.save() {
         eprintln!("Horizon: the accounts are not saved: {e}");
     }
-    Ok(session_file(game_home, pass, env))
+    env.extend(accounts.look_env());
+    let mut session = session_file(game_home, pass, env);
+    session.name = accounts.name_arg().map(str::to_owned);
+    Ok(session)
 }
 
 /// [`session_for_game`] for one launch as `who` (`play --account`, a signed-in account): who
@@ -2173,8 +2150,8 @@ fn launch_as(
         accounts.offline.clone(),
     );
     let pass = accounts
-        .play_as(store, who.clone())
-        .and_then(|()| launch(ep, client_id, store, accounts).map_err(|e| e.to_string()));
+        .play_as(who.clone())
+        .and_then(|()| launch_for_game(ep, client_id, store, accounts).map_err(|e| e.to_string()));
     (
         accounts.selected,
         accounts.offline_selected,

@@ -466,7 +466,7 @@ fn switching_what_an_instance_plays_keeps_its_worlds_mods_and_settings() {
         [
             Unkept::Mods {
                 count: 1,
-                made_for: "Horizon".into()
+                made_for: "Purview".into()
             },
             Unkept::Worlds {
                 count: 1,

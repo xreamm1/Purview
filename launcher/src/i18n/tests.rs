@@ -238,6 +238,7 @@ fn polish_entries_are_valid_and_keep_placeholders() {
 
 #[test]
 fn launcher_brand_is_purview_in_english_and_russian() {
+    assert_eq!(tr_in(Language::English, "Horizon"), "Purview");
     assert_eq!(tr_in(Language::English, "Horizon needs a Microsoft account that owns Minecraft: Java Edition, like other launchers."), "Purview needs a Microsoft account that owns Minecraft: Java Edition, like other launchers.");
     assert!(!tr_in(Language::Russian, "Horizon needs a Microsoft account that owns Minecraft: Java Edition, like other launchers.").contains("Horizon"));
 }

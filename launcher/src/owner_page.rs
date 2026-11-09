@@ -1,7 +1,3 @@
-//! The owner gate in the window (`horizon_launcher::account::launch`): the screen that asks for a
-//! Microsoft account that owns Minecraft: Java Edition. It covers the launcher once for players
-//! without one (those who played offline before the gate), and again whenever Play is refused.
-//! The sign-in runs on it, code and all.
 use super::*;
 
 impl Launcher {
@@ -43,6 +39,9 @@ impl Launcher {
                         .and_then(|item| item.text())
                         .unwrap_or_default();
                     match horizon_launcher::microsoft_config::save_client_id(&id) {
+                        Ok(()) if this.owner_screen_open => {
+                            this.begin_sign_in(this.sign_in_target.clone());
+                        }
                         Ok(()) => this.sign_in_state = None,
                         Err(error) => this.sign_in_state = Some(SignInState::Done(Err(error))),
                     }
@@ -51,47 +50,62 @@ impl Launcher {
             )
     }
 
-    /// Whether the screen covers the window: no owner, and either Play was refused or the player
-    /// hasn't read it yet. The data question comes first.
+    /// Shows the Microsoft sign-in sheet after an explicit request or a refused online launch.
     pub(crate) fn asking_owner(&self) -> bool {
-        (self.owner_shown() == Some(false) || sign_in_preview())
-            && (self.owner_screen_open || !self.settings.owner_notice_seen || sign_in_preview())
-            && !self.asking_consent()
-            && self.opening.is_none()
-    }
-
-    /// `owner` as the window shows it: the developer option that lets offline names play without
-    /// an owner (`dev_options`) hides the gate, as if the keychain hadn't answered yet.
-    pub(crate) fn owner_shown(&self) -> Option<bool> {
-        match self.owner {
-            Some(false) if self.settings.dev_offline => None,
-            owner => owner,
-        }
-    }
-
-    /// Opens the screen and starts the sign-in on it.
-    pub(crate) fn sign_in_to_play(&mut self) {
-        self.owner_screen_open = true;
-        self.start_sign_in();
+        self.owner_screen_open && !self.asking_consent() && self.opening.is_none()
     }
 
     /// Closes it; it comes back with the next refused Play.
     fn close_owner_screen(&mut self) {
         self.cancel_sign_in();
         self.owner_screen_open = false;
-        if !self.settings.owner_notice_seen {
-            self.settings.owner_notice_seen = true;
-            self.save_settings();
+        self.owner_screen_preview = false;
+    }
+
+    pub(super) fn sign_in_copy_label(&self, code: &str) -> &'static str {
+        if self.copied_sign_in_code.as_deref() == Some(code) {
+            "Copied"
+        } else {
+            "Copy code"
         }
+    }
+
+    pub(super) fn copy_sign_in_code(
+        &mut self,
+        code: &str,
+        _window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let copied = if let Some(file) = horizon_launcher::desktop_seams::clipboard_file() {
+            std::fs::write(file, code).is_ok()
+        } else {
+            #[cfg(windows)]
+            {
+                write_windows_clipboard(_window, code)
+            }
+            #[cfg(not(windows))]
+            {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(code.to_owned()));
+                #[cfg(target_os = "linux")]
+                sync_system_clipboard(code.to_owned());
+                cx.read_from_clipboard()
+                    .and_then(|item| item.text())
+                    .as_deref()
+                    == Some(code)
+            }
+        };
+        self.copied_sign_in_code = copied.then(|| code.to_owned());
+        cx.notify();
     }
 
     pub(crate) fn owner_screen(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
         let t = self.theme;
         let n = t.night;
-        let configured = account::client_id().is_some();
+        let preview = self.owner_screen_preview;
+        let configured = preview || account::client_id().is_some();
         // The screenshot preview shows a code without asking Microsoft for one.
         let state = match &self.sign_in_state {
-            _ if sign_in_preview() => Shown::Code("https://www.microsoft.com/link", "K7Q-4MXR"),
+            _ if preview => Shown::Code("https://www.microsoft.com/link", "K7Q-4MXR"),
             _ if !configured => Shown::Idle,
             Some(SignInState::Starting) => Shown::Starting("Asking Microsoft…"),
             Some(SignInState::Working(phase)) => Shown::Starting(phase.label()),
@@ -123,11 +137,11 @@ impl Launcher {
                     .child(tr("Sign in to play").to_string()),
             )
             .child(line(
-                "Horizon needs a Microsoft account that owns Minecraft: Java Edition, like other launchers.",
+                "Online servers need a Microsoft account.",
                 n.ink_soft,
             ))
             .child(line(
-                "No Minecraft install needed: Horizon downloads it from Mojang for your account.",
+                "Offline names play without a Microsoft account that owns the game. Minecraft still comes from your own install.",
                 n.ink_soft,
             ))
             .child(line(
@@ -184,13 +198,12 @@ impl Launcher {
                         )
                         .child(
                             shell::action("owner-copy", shell::Action::Raised, &t)
-                                .child(shell::label(tr("Copy code").to_string()))
-                                .on_click(move |_, _, cx| {
-                                    copy_to_clipboard(
-                                        cx,
-                                        gpui::ClipboardItem::new_string(copy.clone()),
-                                    )
-                                }),
+                                .child(shell::label(
+                                    tr(self.sign_in_copy_label(user_code)).to_string(),
+                                ))
+                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                    this.copy_sign_in_code(&copy, window, cx);
+                                })),
                         ),
                 )
             }
@@ -218,7 +231,7 @@ impl Launcher {
             _ => Some(
                 microsoft::sign_in_button("owner-sign-in", &t).on_click(cx.listener(
                     |this, _: &ClickEvent, _, cx| {
-                        this.sign_in_to_play();
+                        this.start_sign_in();
                         cx.notify();
                     },
                 )),
@@ -326,10 +339,10 @@ impl Launcher {
                     .flex_col()
                     .gap(px(8.))
                     .child(ui::text(14., FontWeight::NORMAL, ink::BODY).child(tr(
-                        "Horizon needs a Microsoft account that owns Minecraft: Java Edition, like other launchers.",
+                        "Online servers need a Microsoft account.",
                     )))
                     .child(ui::text(14., FontWeight::NORMAL, ink::BODY).child(tr(
-                        "No Minecraft install needed: Horizon downloads it from Mojang for your account.",
+                        "Offline names play without a Microsoft account that owns the game. Minecraft still comes from your own install.",
                     )))
                     .child(ui::text(14., FontWeight::NORMAL, ink::QUIET).child(tr(
                         "Your worlds, offline names and settings stay where they are.",
@@ -368,11 +381,19 @@ impl Launcher {
                                         .child(user_code.to_string()),
                                 ),
                         )
-                        .child(ui::quiet("owner-copy", tr("Copy code"), 36., &t).on_click(
-                            move |_, _, cx| {
-                                copy_to_clipboard(cx, gpui::ClipboardItem::new_string(copy.clone()))
-                            },
-                        )),
+                        .child(
+                            ui::quiet(
+                                "owner-copy",
+                                tr(self.sign_in_copy_label(user_code)),
+                                36.,
+                                &t,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _: &ClickEvent, window, cx| {
+                                    this.copy_sign_in_code(&copy, window, cx);
+                                },
+                            )),
+                        ),
                 )
             }
             Shown::Starting(what) => card
@@ -381,7 +402,7 @@ impl Launcher {
                 panel().child(
                     ui::text(14., FontWeight::NORMAL, ink::FULL)
                         .text_color(ui::color(horizon_theme::glass::DANGER))
-                        .child(e.to_string()),
+                        .child(tr(e).to_string()),
                 ),
             ),
             Shown::Idle => card,
@@ -428,7 +449,7 @@ impl Launcher {
                     &t,
                 )
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.sign_in_to_play();
+                    this.start_sign_in();
                     cx.notify();
                 }))
                 .into_any_element(),
@@ -479,6 +500,54 @@ impl Launcher {
                     .bg(ui::scrim()),
             )
             .child(card)
+    }
+}
+
+#[cfg(windows)]
+fn write_windows_clipboard(window: &Window, code: &str) -> bool {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows_sys::Win32::{
+        Foundation::GlobalFree,
+        System::{
+            DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
+            Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
+        },
+    };
+
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return false;
+    };
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return false;
+    };
+    let text: Vec<u16> = code.encode_utf16().chain(std::iter::once(0)).collect();
+    const CF_UNICODETEXT: u32 = 13;
+
+    // SAFETY: the window owns the open clipboard. The movable allocation transfers to
+    // Windows only when SetClipboardData succeeds. Every other path frees it.
+    unsafe {
+        if OpenClipboard(handle.hwnd.get() as _) == 0 {
+            return false;
+        }
+        let memory = GlobalAlloc(GMEM_MOVEABLE, text.len() * std::mem::size_of::<u16>());
+        let copied = if memory.is_null() {
+            false
+        } else {
+            let dest = GlobalLock(memory).cast::<u16>();
+            let copied = if dest.is_null() {
+                false
+            } else {
+                std::ptr::copy_nonoverlapping(text.as_ptr(), dest, text.len());
+                GlobalUnlock(memory);
+                EmptyClipboard() != 0 && !SetClipboardData(CF_UNICODETEXT, memory).is_null()
+            };
+            if !copied {
+                GlobalFree(memory);
+            }
+            copied
+        };
+        CloseClipboard();
+        copied
     }
 }
 

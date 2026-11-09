@@ -1309,10 +1309,12 @@ pub fn revision_of(version: &str) -> Result<String, String> {
         Some(rest) => rest.rsplit('-').next().unwrap_or(rest),
         None => version,
     };
-    let url = format!(
-        "https://api.github.com/repos/{}/commits/{reference}",
+    let repo = if backend::launcher_version(version).is_some() {
+        backend::LAUNCHER_REPO
+    } else {
         backend::REPO
-    );
+    };
+    let url = format!("https://api.github.com/repos/{repo}/commits/{reference}");
     let commit = crate::github::json(&url)?;
     commit["sha"]
         .as_str()
@@ -1418,7 +1420,12 @@ fn pinned_revision(
 pub(crate) fn newest_installed(installed: &[String]) -> Option<&String> {
     installed
         .iter()
-        .find(|t| backend::is_game_tag(t) || t.starts_with("nightly-"))
+        .find(|t| backend::launcher_version(t).is_some())
+        .or_else(|| {
+            installed
+                .iter()
+                .find(|t| backend::is_game_tag(t) || t.starts_with("nightly-"))
+        })
 }
 
 /// The installed version a build for an instance that plays `current` starts from: `current`
@@ -2031,15 +2038,12 @@ fn post_build_programs(
 /// `.horizon-revision` (bundles pin it). A Nightly's commit stays downloadable after the Nightly
 /// is gone: its `nightly-source/…` tag keeps it (docs/release-flow.md). Links are left out:
 /// horizon-mixins refuses them, and none is needed to build.
-fn source(revision: &str) -> Result<PathBuf, String> {
+fn source(revision: &str, repo: &str) -> Result<PathBuf, String> {
     let dir = root().join("source").join(revision);
     if dir.join(".horizon-revision").is_file() {
         return Ok(dir);
     }
-    let archive = format!(
-        "https://codeload.github.com/{}/tar.gz/{revision}",
-        backend::REPO
-    );
+    let archive = format!("https://codeload.github.com/{repo}/tar.gz/{revision}");
     let partial = root().join("source").join(format!(".{revision}.partial"));
     let top = unpack_archive(&archive, &partial, u64::MAX)?;
     fs::write(top.join(".horizon-revision"), revision).map_err(|e| e.to_string())?;
@@ -2284,7 +2288,12 @@ fn pipeline(
         },
         None => revision_of(base),
     };
-    let date = |r: &str| committed(backend::REPO, r);
+    let source_repo = if backend::launcher_version(origin).is_some() {
+        backend::LAUNCHER_REPO
+    } else {
+        backend::REPO
+    };
+    let date = |r: &str| committed(source_repo, r);
     let (pinned, mut pinned_by) = pinned_revision(&pins, on_base, base_revision, date)?;
     // Known without asking GitHub again unless a pin chose the commit.
     let base_horizon = match pinned_by.is_empty() {
@@ -2375,7 +2384,7 @@ fn pipeline(
         let rust = rust_toolchain::install(|f| progress(Step::Rust(f)))?;
         let needs_mixins = mods.iter().any(|m| m.mixins_content);
         progress(Step::Source(revision.clone()));
-        let source = source(&revision)?;
+        let source = source(&revision, source_repo)?;
         // `root()` is already the form horizon-mixins and MinGW take: resolved (no link, which
         // it refuses) and, on Windows, ASCII (which they can't read past), both by build_dir.
         let real = root();

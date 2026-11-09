@@ -577,9 +577,10 @@ impl Game<'_> {
             super::entity_culling::default_range(glam::DVec3::splat(0.25), self.view_scale());
         let skinning = self.skinning();
         let lights = diffuse_lights(self.dim == Dim::Nether);
+        let occlusion_enabled = self.settings.horizon.entity_culling
+            != super::EntityCullingMode::Off
+            && !self.pack_shadow_casters.0;
         for (item, at, partial, entity) in live.chain(taken) {
-            let entity_start = out.len();
-            self.mark_motion(entity_start, (2 << 32) | u64::from(item.id));
             let q = item.position;
             let pos = glam::DVec3::from_array(at) - camera;
             let far = if entity {
@@ -637,6 +638,9 @@ impl Game<'_> {
             // ItemEntity's collision box is only 0.25 blocks and cannot prove
             // that this larger rendered model stays behind an occluder.
             let culling = entity.then(|| {
+                if !occlusion_enabled {
+                    return super::entity_culling::EntityCullDecision::Bypass;
+                }
                 state
                     .posed_bounds(&copies)
                     .map(|(lo, hi)| {
@@ -661,6 +665,8 @@ impl Game<'_> {
             if culling.is_some_and(|decision| decision.hides_entity()) {
                 continue;
             }
+            let entity_start = out.len();
+            self.mark_motion(entity_start, (2 << 32) | u64::from(item.id));
             let outline = self.thing_outline(item.id, "minecraft:item");
             // Posed on the GPU when every layer can be, its silhouette too when it glows.
             let skinned = skinning

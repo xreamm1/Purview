@@ -11,8 +11,8 @@ pub struct AttackStrength {
     pub ticker: i32,
     /// `LivingEntity.itemSwapTicker`.
     pub swap_ticker: i32,
-    /// `Player.lastItemInMainHand`: the stack as last compared.
-    last_item: Option<HeldStack>,
+    /// Item ID from `Player.lastItemInMainHand`. Only a different item resets the tickers.
+    last_item: Option<String>,
 }
 /// What `ItemStack.matches` / `isSameItem` compare of the main-hand stack:
 /// its item id and the rest of the stack (count and components) as a key.
@@ -31,22 +31,19 @@ impl AttackStrength {
     /// (`!ItemStack.matches` and `!ItemStack.isSameItem`).
     /// Whether they were reset.
     pub fn tick(&mut self, main_hand: Option<HeldStack>) -> bool {
+        self.tick_item(main_hand.as_ref().map(|stack| stack.item.as_str()))
+    }
+
+    /// Advances the tickers without serializing stack components or allocating for the same item.
+    pub fn tick_item(&mut self, item: Option<&str>) -> bool {
         self.ticker += 1;
         self.swap_ticker += 1;
-        let mut reset = false;
-        if self.last_item != main_hand {
-            let same_item = match (&self.last_item, &main_hand) {
-                (Some(a), Some(b)) => a.item == b.item,
-                (None, None) => true,
-                _ => false,
-            };
-            if !same_item {
-                self.reset();
-                reset = true;
-            }
-            self.last_item = main_hand;
+        if self.last_item.as_deref() == item {
+            return false;
         }
-        reset
+        self.last_item = item.map(str::to_owned);
+        self.reset();
+        true
     }
     /// `resetAttackStrengthTicker`: swinging at nothing, attacking or
     /// stopping a block break.

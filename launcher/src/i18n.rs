@@ -637,7 +637,7 @@ fn table(language: Language) -> &'static Table {
                     .collect()
             })
             .collect();
-        let branded: Table = tables
+        let mut branded: Table = tables
             .iter()
             .flat_map(|table| table.keys())
             .filter(|en| en.contains("Horizon"))
@@ -648,7 +648,11 @@ fn table(language: Language) -> &'static Table {
                 )
             })
             .collect();
+        branded.insert("Horizon".into(), "Purview");
         tables[0] = branded;
+        for table in &mut tables {
+            table.insert("Horizon".into(), "Purview");
+        }
         tables
     });
     let i = Language::ALL

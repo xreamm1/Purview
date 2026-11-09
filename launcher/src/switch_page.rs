@@ -24,9 +24,7 @@ impl Launcher {
 
     pub(super) fn play_as(&mut self, who: Player) {
         let mut accounts = Accounts::load();
-        let done = accounts
-            .play_as_with(account::store(), who, self.settings.dev_offline)
-            .and_then(|()| accounts.save());
+        let done = accounts.play_as(who).and_then(|()| accounts.save());
         match done {
             Ok(()) => self.accounts = accounts,
             Err(e) => self.sign_in_state = Some(SignInState::Done(Err(e))),
@@ -57,7 +55,7 @@ impl Launcher {
         out.push((
             Player::GameName,
             self.offline_name.clone().unwrap_or_else(|| "Player".into()),
-            tr("Offline, the game's name"),
+            tr("Offline names"),
         ));
         out
     }
@@ -281,7 +279,7 @@ impl Launcher {
             );
         rows = rows.child(index_row(
             n,
-            tr("Offline name"),
+            tr("Offline names"),
             Some(
                 div()
                     .child(tr(

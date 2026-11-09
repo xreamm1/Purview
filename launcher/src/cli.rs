@@ -20,7 +20,7 @@ use std::process::Command;
 #[command(
     name = "purview",
     version = backend::VERSION,
-    about = "Installs, prepares and starts Horizon. Without a subcommand, opens the window."
+    about = "Installs, prepares and starts Purview. Without a subcommand, opens the window."
 )]
 struct Cli {
     /// Print JSON instead of text, where a command has something to report
@@ -108,8 +108,8 @@ enum ServersCmd {
 enum AccountCmd {
     /// The signed-in accounts and which one plays
     List,
-    /// Sign in with a Microsoft account in your browser (device code). Play needs one that owns
-    /// Minecraft: Java Edition
+    /// Sign in with a Microsoft account in your browser (device code). Online-mode servers require
+    /// an account that owns Minecraft: Java Edition
     SignIn {
         /// Sign this account (name or UUID) in again: another Microsoft account is refused and
         /// who plays stays the same
@@ -703,13 +703,13 @@ impl SourceArg {
 enum Cmd {
     /// Write a shell completion script to stdout
     Completions { shell: clap_complete::Shell },
-    /// List Horizon releases, or the installed versions
+    /// List Purview releases, or the installed versions
     Versions {
         /// Only the versions installed here (no network)
         #[arg(long)]
         installed: bool,
     },
-    /// Download and install a release (a tag such as v2026.10.13, or "latest")
+    /// Download and install a Purview release (a tag such as launcher@0.3.1, or "latest")
     Install { tag: String },
     /// Remove an installed version
     Remove { tag: String },
@@ -741,7 +741,7 @@ enum Cmd {
         #[arg(long)]
         version: Option<String>,
     },
-    /// Start the client (needs a signed-in Microsoft account that owns Minecraft: Java Edition)
+    /// Start Purview. Single-player and offline-mode servers can use an offline profile.
     Play {
         #[arg(long)]
         version: Option<String>,
@@ -1504,9 +1504,8 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
                 after_exit(&instance, &vars);
                 return played;
             }
-            // Who plays this launch; the accounts below choose it in memory only, for its
-            // `--name` and look.
-            let mut accounts = Accounts::load();
+            // An explicit Microsoft account applies to this launch only.
+            let accounts = Accounts::load();
             let who = match account {
                 Some(who) => Some(account::Player::Microsoft(
                     accounts
@@ -1519,9 +1518,6 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
                 )),
                 None => None,
             };
-            if let Some(who) = &who {
-                accounts.play_as(account::store(), who.clone())?;
-            }
             let mut cmd =
                 backend::client_as(&instance.resolve_version(version.as_deref())?, who.as_ref())?;
             instances::apply(&mut cmd, &instance)?;
@@ -1541,10 +1537,6 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
             }
             cmd.args(arg);
             let started = std::time::Instant::now();
-            if let Some(name) = accounts.name_arg() {
-                cmd.arg("--name").arg(name);
-            }
-            cmd.envs(accounts.look_env());
             let vars = instance.vars(cmd.get_program());
             cmd.envs(vars.iter().map(|(k, v)| (k, v)));
             let played = attached(horizon_launcher::launch::wrap(cmd, &instance.launch));
@@ -1930,8 +1922,7 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                 }));
             } else if accounts.accounts.is_empty() && accounts.offline.is_empty() {
                 println!(
-                    "No Microsoft account signed in. Play needs one that owns Minecraft: Java \
-                     Edition: horizon-launcher account sign-in"
+                    "Playing offline as the game's own name. Use `horizon-launcher account offline NAME` to choose a name."
                 );
             } else {
                 for a in &accounts.accounts {
@@ -1951,9 +1942,6 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                     println!(
                         "Playing offline as the game's own name (`account select NAME` to switch)."
                     );
-                }
-                if !accounts.has_owner(account::store()) {
-                    println!("{} {}", account::NoOwner, tr(backend::SIGN_IN_HINT));
                 }
             }
         }
@@ -2044,7 +2032,7 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                 ),
                 (None, None) => return Err(find(&accounts, &who).unwrap_err()),
             };
-            accounts.play_as(account::store(), player)?;
+            accounts.play_as(player)?;
             accounts.save()?;
             println!("The game plays as {name}.");
         }
@@ -2053,7 +2041,7 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                 Some(n) => account::Player::Offline(n),
                 None => account::Player::GameName,
             };
-            accounts.play_as(account::store(), player)?;
+            accounts.play_as(player)?;
             accounts.save()?;
             match accounts.name_arg() {
                 Some(n) => println!("The game plays offline as {n}."),

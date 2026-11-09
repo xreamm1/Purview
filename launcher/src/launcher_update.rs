@@ -158,10 +158,11 @@ fn verify_record(
         "https://github.com/{LAUNCHER_REPO}/releases/download/{}/{asset}",
         release.tag,
     );
+    let encoded_url = expected_url.replace('@', "%40");
     if !release
         .asset
         .as_ref()
-        .is_some_and(|(url, _)| url == &expected_url)
+        .is_some_and(|(url, _)| url == &expected_url || url == &encoded_url)
     {
         return Err("The Purview update asset is not from its release repository.".into());
     }

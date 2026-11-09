@@ -673,12 +673,10 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
 /// Every published release of the repository, both kinds, as GitHub's JSON (kept on disk with its
 /// ETag, and read through Kira's mirror past GitHub's rate limit: [`crate::github`]).
 fn release_list() -> Result<serde_json::Value, String> {
-    crate::github::json(&format!(
-        "https://api.github.com/repos/{REPO}/releases?per_page=100"
-    ))
+    launcher_release_list()
 }
 
-fn launcher_release_list() -> Result<serde_json::Value, String> {
+pub(crate) fn launcher_release_list() -> Result<serde_json::Value, String> {
     crate::github::json(&format!(
         "https://api.github.com/repos/{LAUNCHER_REPO}/releases?per_page=100"
     ))
@@ -742,6 +740,12 @@ pub fn releases() -> Result<Vec<Release>, String> {
 /// The game's builds in `list`, newest first. A Nightly is listed under the version it installs as
 /// ([`crate::nightly::version_of`]); only the current one (`nightly`) is an update.
 pub(crate) fn game_releases(list: &serde_json::Value) -> Vec<Release> {
+    if crate::purview_game::supported() {
+        let purview = crate::purview_game::releases(list);
+        if !purview.is_empty() {
+            return purview;
+        }
+    }
     let settings = Settings::load();
     let assets = game_assets_for(
         std::env::consts::OS,
@@ -1206,6 +1210,9 @@ fn unpack(archive: &Path, url: &str, to: &Path) -> Result<(), String> {
 /// Downloads one release, checks it against its signed checksums and unpacks it; `progress` gets
 /// the fraction done.
 pub fn install(release: &Release, progress: impl Fn(f32)) -> Result<(), String> {
+    if crate::purview_game::supported() && launcher_version(&release.tag).is_some() {
+        return crate::purview_game::install_release(release, progress);
+    }
     let tag = release.tag.as_str();
     let settings = Settings::load();
     let assets = game_assets_for(
@@ -1990,8 +1997,7 @@ fn download_for_owner(
     log: &dyn Fn(String),
 ) -> Result<(), String> {
     let mut accounts = account::Accounts::load();
-    // The strict gate, never `launch_for_game`: the developer option that lets offline names
-    // play without an owner must not download the game for them.
+    // Mojang downloads require a verified owner, including when an offline profile is selected.
     let pass = account::launch(
         &account::Endpoints::live(),
         account::client_id().as_deref(),
@@ -3018,7 +3024,7 @@ pub fn client_as(tag: &str, who: Option<&account::Player>) -> Result<Command, St
         return Err(error);
     }
     let session = match who {
-        None => account::session_for_game(&game_home(), false).map_err(|e| e.to_string()),
+        None => account::session_for_game(&game_home()).map_err(|e| e.to_string()),
         Some(who) => account::session_for_game_as(&game_home(), who),
     }
     .map_err(|refused| format!("{refused} {}", crate::i18n::tr(SIGN_IN_HINT)))?;
@@ -3031,6 +3037,9 @@ pub fn client_as(tag: &str, who: Option<&account::Player>) -> Result<Command, St
     let mut cmd = client_command(tag);
     if let Some(file) = session.file {
         cmd.arg("--session-file").arg(file);
+    }
+    if let Some(name) = session.name {
+        cmd.arg("--name").arg(name);
     }
     cmd.envs(session.env);
     if let Some(e) = session.offline {
@@ -3168,6 +3177,7 @@ pub fn horizon_update(releases: &[Release], installed: &[String]) -> Option<Rele
     let newer = !installed.contains(&newest.tag)
         && installed
             .iter()
+            .filter(|t| launcher_version(&newest.tag).is_none() || launcher_version(t).is_some())
             .all(|t| compare_versions(&newest.tag, t).is_ge());
     newer.then(|| newest.clone())
 }
@@ -3277,9 +3287,6 @@ pub fn select_after_update(selected: Option<&str>, installed_before: &[String]) 
 /// Installs `tag` (or with "latest" the newest release, pre-releases left out), then updates the selection as
 /// `select_after_update` says when `as_update`, or always selects it otherwise.
 pub fn install_tag(tag: &str, as_update: bool, progress: impl Fn(f32)) -> Result<String, String> {
-    if tag == "latest" && crate::purview_game::supported() {
-        return crate::purview_game::install(progress);
-    }
     let releases = releases()?;
     let release = if tag == "latest" {
         releases
@@ -3290,7 +3297,7 @@ pub fn install_tag(tag: &str, as_update: bool, progress: impl Fn(f32)) -> Result
         releases
             .iter()
             .find(|r| r.tag == tag)
-            .ok_or_else(|| format!("No Horizon release is tagged {tag}."))?
+            .ok_or_else(|| format!("No Purview release is tagged {tag}."))?
     };
     if release.asset.is_none() {
         return Err(format!("{} has no build for this platform.", release.tag));
@@ -4308,10 +4315,6 @@ pub struct Settings {
     /// first-run question, or on the Play page once if they answered that before it existed.
     #[serde(default)]
     pub ping_notice_seen: bool,
-    /// The player without an account that owns the game has read, once, why the launcher needs
-    /// one now (the owner gate's screen).
-    #[serde(default)]
-    pub owner_notice_seen: bool,
     /// Seconds a partner banner (the sidebar's card or the Servers page's banner) has been on
     /// screen, over every start, up to `partner::SEEN_BEFORE_HIDE`: only then can the player hide it.
     #[serde(default)]
@@ -4367,12 +4370,6 @@ pub struct Settings {
     /// An older file's switch for the release profile, read when `native_profile` is unset.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub native_release: bool,
-    /// Developer options (hidden: seven clicks on the sidebar's launcher version reveal them):
-    /// offline names play without an account that owns the game, in the window only
-    /// (`account::Accounts::play_as_with`, `account::launch_for_game`). Never a download: the game still
-    /// comes from the player's own install. Off by default, and absent from the file while off.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub dev_offline: bool,
 }
 
 impl Settings {
@@ -4638,8 +4635,7 @@ mod tests {
     }
 
     /// The launcher downloads Mojang's game files (client jar, libraries, assets) only for an
-    /// account the services said owns the game: never without one, and never past the gate by
-    /// the developer option (`Settings::dev_offline`), whose pass has no owner.
+    /// account the services said owns the game.
     #[test]
     fn mojang_downloads_only_for_an_owner() {
         let dir = std::env::temp_dir().join(format!("horizon-owner-only-{}", std::process::id()));

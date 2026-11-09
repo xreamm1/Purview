@@ -63,7 +63,7 @@ impl Launcher {
     pub(super) fn launcher_theme_row(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let current = themes::theme(self.settings.theme.as_deref()).map(|th| th.id);
-        let mut options: Vec<(Option<&'static str>, &'static str)> = vec![(None, "Horizon")];
+        let mut options: Vec<(Option<&'static str>, &'static str)> = vec![(None, "Purview")];
         options.extend(themes::THEMES.iter().map(|th| (Some(th.id), th.name)));
         let this = cx.entity().downgrade();
         let picker = ui::segments("launcher-theme", &options, current, &t, move |id, _, cx| {

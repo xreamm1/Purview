@@ -59,7 +59,9 @@ pub fn about(version: &str) -> Option<About> {
 
 /// A version Horizon published and signed: a release or a Nightly.
 fn official(version: &str) -> bool {
-    backend::is_game_tag(version) || crate::nightly::date_of(version).is_some()
+    backend::is_game_tag(version)
+        || backend::launcher_version(version).is_some()
+        || crate::nightly::date_of(version).is_some()
 }
 
 /// The installed version an import takes its game files from: `requested` (`--version`), else

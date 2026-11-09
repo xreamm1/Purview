@@ -16,7 +16,7 @@ MCP: none: the player's switch.
 
 ## `horizon-launcher versions`
 
-List Horizon releases, or the installed versions.
+List Purview releases, or the installed versions.
 
     horizon-launcher versions
 
@@ -26,7 +26,7 @@ MCP: `versions`.
 
 ## `horizon-launcher install`
 
-Download and install a release (a tag such as v2026.10.13, or "latest").
+Download and install a Purview release (a tag such as launcher@0.3.1, or "latest").
 
     horizon-launcher install <TAG>
 
@@ -68,7 +68,7 @@ MCP: `prepare`.
 
 ## `horizon-launcher play`
 
-Start the client (needs a signed-in Microsoft account that owns Minecraft: Java Edition).
+Start Purview. Single-player and offline-mode servers can use an offline profile.
 
     horizon-launcher play
 
@@ -148,7 +148,7 @@ MCP: `account_list`.
 
 ## `horizon-launcher account sign-in`
 
-Sign in with a Microsoft account in your browser (device code). Play needs one that owns Minecraft: Java Edition.
+Sign in with a Microsoft account in your browser (device code). Online-mode servers require an account that owns Minecraft: Java Edition.
 
     horizon-launcher account sign-in
 

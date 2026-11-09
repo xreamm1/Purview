@@ -483,7 +483,7 @@ fn status(send: &Sender<Event>, text: &str) {
 }
 
 /// Shown when an online-mode server asks a client without an account to authenticate.
-pub const NOT_SIGNED_IN: &str = "This server is in online mode. Sign in with your Microsoft account in the Horizon launcher to join it.";
+pub const NOT_SIGNED_IN: &str = "This server is in online mode. Sign in with your Microsoft account in the Purview launcher to join it.";
 
 /// A translation, or the key itself (Language.getOrDefault).
 fn tr(lang: &Language, key: &str) -> String {
@@ -2162,7 +2162,7 @@ mod tests {
     /// No account never joins; the signed-in rule is compared with the real
     /// client login listener by test_lan_auth_parity.py.
     #[test]
-    fn lan_login_continues_after_authentication_failure() {
+    fn login_refuses_offline_profiles_when_authentication_is_required() {
         for lan in [true, false] {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();

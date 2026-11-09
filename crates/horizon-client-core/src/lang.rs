@@ -455,6 +455,12 @@ impl Language {
         {
             apply_deprecated(&mut map, &bytes);
         }
+        // Older prepared resources may override Purview's bundled menus.
+        for (key, label) in &mut map {
+            if key.starts_with("horizon.pages.") && label.contains("Horizon") {
+                *label = label.replace("Horizon", "Purview");
+            }
+        }
         let bidirectional = available(sources)
             .iter()
             .any(|info| info.code == code && info.bidirectional);
@@ -612,6 +618,25 @@ mod tests {
             self.0.get(path).cloned()
         }
     }
+    #[test]
+    fn old_prepared_menu_labels_keep_the_purview_brand() {
+        let old = Mem(HashMap::from([(
+            "assets/horizon/lang/ru_ru.json".into(),
+            br#"{"horizon.pages.extras":"Extras Horizon","horizon.pages.settings":"Settings Horizon","horizon.pages.open.horizon_settings":"Settings Horizon...","mod.credit":"Horizon"}"#.to_vec(),
+        )]));
+        let language = Language::load(&[&old], "ru_ru");
+        assert_eq!(language.get("horizon.pages.extras"), Some("Extras Purview"));
+        assert_eq!(
+            language.get("horizon.pages.settings"),
+            Some("Settings Purview")
+        );
+        assert_eq!(
+            language.get("horizon.pages.open.horizon_settings"),
+            Some("Settings Purview...")
+        );
+        assert_eq!(language.get("mod.credit"), Some("Horizon"));
+    }
+
     #[test]
     fn bundled_horizon_strings_follow_the_language() {
         // No prepared resources at all: the namespace is compiled in.

@@ -85,7 +85,7 @@ impl SourceId {
         match self {
             SourceId::Modrinth => "Modrinth",
             SourceId::CurseForge => "CurseForge",
-            SourceId::Horizon => "Horizon",
+            SourceId::Horizon => "Purview",
         }
     }
 

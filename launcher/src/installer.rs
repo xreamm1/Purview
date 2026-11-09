@@ -10,7 +10,7 @@
 //! "Purview" ([`folder_for`]) and is removed with `remove_dir`, which only takes an empty one.
 //!
 //! Command lines (handled in `main` before the CLI parser, so MCP never sees them):
-//! `horizon-launcher-setup.exe` (window), `... setup --quiet [--dir <folder>] [--desktop-shortcut]`,
+//! `horizon-launcher-setup.exe` (window), `... setup --quiet [--dir <folder>] [--no-desktop-shortcut]`,
 //! `purview.exe uninstall` (window), `... uninstall --quiet [--remove-data]`.
 use crate::backend;
 use crate::shortcut;
@@ -338,7 +338,8 @@ pub fn install(options: &Options, progress: impl Fn(Step, f32)) -> Result<PathBu
     if let Some(link) = start_menu_link() {
         write_link(&link, &exe).map_err(|e| format!("{}: {e}", link.display()))?;
     }
-    if let Some(link) = desktop_link().filter(|_| options.desktop) {
+    if options.desktop {
+        let link = desktop_link().ok_or("This computer has no desktop folder.")?;
         write_link(&link, &exe).map_err(|e| format!("{}: {e}", link.display()))?;
     }
     progress(Step::Registry, 0.85);
@@ -531,7 +532,7 @@ pub fn after_update(version: &str) {
     }
 }
 
-/// `setup --quiet [--dir <folder>] [--desktop-shortcut]` (the setup exe only) and
+/// `setup --quiet [--dir <folder>] [--no-desktop-shortcut]` (the setup exe only) and
 /// `uninstall --quiet [--remove-data]`: no window, for scripts. None: not a quiet command.
 pub fn run_quiet() -> Option<i32> {
     let args = args();
@@ -558,7 +559,7 @@ pub fn run_quiet() -> Option<i32> {
             {
                 options.dir = folder_for(Path::new(dir));
             }
-            options.desktop = flag("--desktop-shortcut");
+            options.desktop = !flag("--no-desktop-shortcut");
             Some(match install(&options, |_, _| {}) {
                 Ok(exe) => {
                     println!("{}", exe.display());

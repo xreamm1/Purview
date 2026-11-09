@@ -53,7 +53,7 @@ impl Launcher {
         let t = self.theme;
         let instance = self
             .selected_instance()
-            .map_or_else(|| "Horizon".to_owned(), |i| i.name.clone());
+            .map_or_else(|| "Purview".to_owned(), |i| i.name.clone());
         let head = ui::page_head(
             tr("Mods"),
             trf(

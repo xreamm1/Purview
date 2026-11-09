@@ -1,15 +1,13 @@
-//! A signed fork engine installed beside its signed upstream bootstrap, never over it.
-use crate::{backend, build_import, launcher_update};
-use std::fs;
-
-const RECORD: &str = "purview-engine.json";
+//! Signed, self-contained Windows game releases from the Purview repository.
+use crate::{backend, launcher_update};
 
 pub fn supported() -> bool {
     cfg!(all(windows, target_arch = "x86_64"))
 }
 
 pub fn managed(tag: &str) -> bool {
-    build_import::is_imported(tag) && backend::version_dir(tag).join(RECORD).is_file()
+    backend::launcher_version(tag).is_some()
+        && backend::version_dir(tag).join(".installed").is_file()
 }
 
 /// Custom imports and native builds keep the engine their author selected.
@@ -18,57 +16,37 @@ pub fn follows(tag: &str) -> bool {
         && (backend::is_game_tag(tag) || crate::nightly::date_of(tag).is_some() || managed(tag))
 }
 
-pub fn install(progress: impl Fn(f32)) -> Result<String, String> {
-    if !supported() {
-        return Err("Purview engine downloads are available on Windows x64.".into());
-    }
-    let list = crate::github::json(&format!(
-        "https://api.github.com/repos/{}/releases?per_page=100",
-        backend::LAUNCHER_REPO,
-    ))?;
-    let releases = backend::parse_releases(&list, Some(launcher_update::GAME_ASSET), |tag| {
+pub(crate) fn releases(list: &serde_json::Value) -> Vec<backend::Release> {
+    backend::parse_releases(list, Some(launcher_update::GAME_ASSET), |tag| {
         backend::launcher_version(tag).is_some()
-    });
-    let release = releases
-        .iter()
-        .find(|r| r.asset.is_some())
-        .ok_or("No Purview release provides a game engine for Windows x64.")?;
+    })
+    .into_iter()
+    .filter(|release| release.asset.is_some())
+    .collect()
+}
+
+pub(crate) fn install_release(
+    release: &backend::Release,
+    progress: impl Fn(f32),
+) -> Result<(), String> {
     let update = launcher_update::game(release)?;
-    if !backend::installed().contains(&update.base) {
-        let json = crate::github::json(&format!(
-            "https://api.github.com/repos/{}/releases/tags/{}",
-            backend::GAME_REPO,
-            update.bootstrap_tag,
-        ))?;
-        let available = backend::game_releases(&serde_json::json!([json]));
-        let base = available.iter().find(|r| r.tag == update.base)
-            .ok_or("The pinned bootstrap no longer matches this Purview engine. Install a newer Purview release.")?;
-        backend::install(base, |p| progress(p * 0.7))?;
+    if update.bootstrap_tag != "bundled" {
+        return Err("This Purview release does not contain its preparation files.".into());
     }
-    let cache = backend::data_dir()
-        .join("purview-engine")
-        .join(&update.sha256);
-    fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
-    let program = cache.join(launcher_update::GAME_ASSET);
-    let valid = backend::file_sha256(&program).is_ok_and(|hash| hash == update.sha256);
-    if !valid {
-        backend::download(&update.url, update.size, &update.sha256, &program, &|p| {
-            progress(0.7 + p * 0.25)
-        })?;
+    if managed(&release.tag) {
+        return Ok(());
     }
-    let tag = build_import::import(&program, Some(&update.base))?;
-    // An existing import with the same short id must still hold these exact signed bytes.
-    let imported = backend::version_dir(&tag).join(backend::CLIENT);
-    horizon_release_sign::check(
-        &update.release_tag,
-        &update.sha256,
-        &backend::file_sha256(&imported)?,
-    )?;
-    fs::write(
-        backend::version_dir(&tag).join(RECORD),
-        serde_json::to_vec_pretty(&update).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
-    progress(1.0);
-    Ok(tag)
+    backend::install_as(release, &release.tag, &update.sha256, None, progress)
+}
+
+pub fn try_install(progress: impl Fn(f32)) -> Result<Option<String>, String> {
+    if !supported() {
+        return Ok(None);
+    }
+    let list = backend::launcher_release_list()?;
+    let Some(release) = releases(&list).into_iter().next() else {
+        return Ok(None);
+    };
+    install_release(&release, progress)?;
+    Ok(Some(release.tag))
 }

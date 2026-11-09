@@ -712,7 +712,7 @@ impl Options {
             match arg.as_str() {
                 "--help" | "-h" => {
                     println!(
-                        "Horizon — Minecraft Java Edition {} in Rust\n\n  --resources PATH        Prepared resources (horizon-prepare)\n  --render-distance N     Chunks, 2..128 (default 12)\n  --world NAME            World folder under saves/ (default \"New World\")\n  --seed N                World seed for new worlds (default 0)\n  --width N, --height N   Window size (default 1280 x 720)\n  --creative              Creative mode (default survival)\n  --test-terrain          Simple test terrain instead of vanilla generation\n  --frames N              Exit after N frames (testing)\n  --world-frames N        Exit after N frames drawn in the world (testing)\n  --smoke-report PATH     Write a JSON report on exit\n  --benchmark SCENARIO    Run a benchmark (standard, village, forest, ocean, mountain), write its report to benchmarks/ and quit\n  --control               Accept horizon-ctl commands on a local socket\n  --control-socket PATH   Control socket path (default $XDG_RUNTIME_DIR/horizon-control.sock)\n  --transfers SETTINGS    A dedicated server takes a proxy's hand-over requests (server.toml [transfer], docs/server.md)\n  --server HOST[:PORT]    Join a multiplayer server (offline mode) at start\n  --quickPlaySingleplayer WORLD  Open this world of saves/ at start, only if it exists (vanilla's)\n  --quickPlayMultiplayer HOST[:PORT]  The same as --server (vanilla's name)\n  --name NAME             Player name for multiplayer (default: generated once, kept in horizon-player.txt)\n  --session-file PATH     Signed-in account from the launcher (read once, then deleted)\n  --session-stdin         The same account as JSON on standard input\n  --game-dir DIR          Game folder: saves, options.txt, packs, mods (default: the working directory)\n  --home DIR              Logs and crash reports (default $HORIZON_HOME, else the platform data folder)\n  --player-dir DIR        This player's own files when several play in one game folder: options.txt, logs, horizon-player.txt, servers.dat, screenshots\n  --fullscreen            Open the window fullscreen\n  --launch-api            Print the Launch API version and options as JSON (docs/api/launch.md)\n  --dev-mod PATH          A content mod (.hmod or folder) to develop: always on\n  --pregen                Add Horizon's /pregen command (docs/pregeneration.md)\n\nControls: mouse look, WASD move, Space jump, Left Shift sneak, Left Ctrl sprint,\nleft click break, right click place/use, 1-9/scroll hotbar, E inventory,\nQ drop, F3 debug, Esc pause.",
+                        "Purview — Minecraft Java Edition {} in Rust\n\n  --resources PATH        Prepared resources (horizon-prepare)\n  --render-distance N     Chunks, 2..128 (default 12)\n  --world NAME            World folder under saves/ (default \"New World\")\n  --seed N                World seed for new worlds (default 0)\n  --width N, --height N   Window size (default 1280 x 720)\n  --creative              Creative mode (default survival)\n  --test-terrain          Simple test terrain instead of vanilla generation\n  --frames N              Exit after N frames (testing)\n  --world-frames N        Exit after N frames drawn in the world (testing)\n  --smoke-report PATH     Write a JSON report on exit\n  --benchmark SCENARIO    Run a benchmark (standard, village, forest, ocean, mountain), write its report to benchmarks/ and quit\n  --control               Accept horizon-ctl commands on a local socket\n  --control-socket PATH   Control socket path (default $XDG_RUNTIME_DIR/horizon-control.sock)\n  --transfers SETTINGS    A dedicated server takes a proxy's hand-over requests (server.toml [transfer], docs/server.md)\n  --server HOST[:PORT]    Join a multiplayer server (offline mode) at start\n  --quickPlaySingleplayer WORLD  Open this world of saves/ at start, only if it exists (vanilla's)\n  --quickPlayMultiplayer HOST[:PORT]  The same as --server (vanilla's name)\n  --name NAME             Player name for multiplayer (default: generated once, kept in horizon-player.txt)\n  --session-file PATH     Signed-in account from the launcher (read once, then deleted)\n  --session-stdin         The same account as JSON on standard input\n  --game-dir DIR          Game folder: saves, options.txt, packs, mods (default: the working directory)\n  --home DIR              Logs and crash reports (default $HORIZON_HOME, else the platform data folder)\n  --player-dir DIR        This player's own files when several play in one game folder: options.txt, logs, horizon-player.txt, servers.dat, screenshots\n  --fullscreen            Open the window fullscreen\n  --launch-api            Print the Launch API version and options as JSON (docs/api/launch.md)\n  --dev-mod PATH          A content mod (.hmod or folder) to develop: always on\n  --pregen                Add Horizon's /pregen command (docs/pregeneration.md)\n\nControls: mouse look, WASD move, Space jump, Left Shift sneak, Left Ctrl sprint,\nleft click break, right click place/use, 1-9/scroll hotbar, E inventory,\nQ drop, F3 debug, Esc pause.",
                         horizon_core::VANILLA_VERSION
                     );
                     return Ok(None);
@@ -2811,6 +2811,7 @@ struct Game<'a> {
     level_up_sound: horizon_client::entities::LevelUpSound,
     /// The arm swing (`LivingEntity.SwingState`) and how many swings started.
     swing: horizon_client::first_person::SwingState,
+    main_hand_swing_slot: Option<usize>,
     swings_started: u32,
     /// The first-person equip heights and the items the hands show (with
     /// the slot each came from).
@@ -13208,18 +13209,14 @@ impl Game<'_> {
         let Some(player) = self.player.as_mut() else {
             return;
         };
-        for (attribute, id) in std::mem::take(&mut self.applied_modifiers) {
+        for (attribute, id) in self.applied_modifiers.drain(..) {
             let _ = player.set_modifier_unclamped(&attribute, &id, 0.0, "add_value", false);
         }
         let slots = ["head", "chest", "legs", "feet"];
-        let mut equipped: Vec<(Option<&ItemStack>, &str)> = self
-            .armor
-            .iter()
-            .zip(slots)
-            .map(|(s, n)| (s.as_ref(), n))
-            .collect();
-        equipped.push((self.inventory[self.selected].as_ref(), "mainhand"));
-        equipped.push((self.offhand.as_ref(), "offhand"));
+        let equipped = self.armor.iter().map(Option::as_ref).zip(slots).chain([
+            (self.inventory[self.selected].as_ref(), "mainhand"),
+            (self.offhand.as_ref(), "offhand"),
+        ]);
         for (stack, slot) in equipped {
             let Some(info) = stack.and_then(|s| world_items!(self).get(&s.item)) else {
                 continue;
@@ -14538,13 +14535,6 @@ impl Game<'_> {
         // swings; each hand has its inverse arm height (the swap scale is 1
         // for every item but spears).
         let swing = self.swing.animation(a);
-        let attacks = Hand::BOTH.map(|h| {
-            if self.swing.attack_hand() == h {
-                swing
-            } else {
-                0.0
-            }
-        });
         let heights = self.heights.interpolated(a);
         // The hand sway: both hands turn by a tenth of the bobs' lag.
         let to_world = self.sway.to_world(a, &self.view);
@@ -14554,7 +14544,7 @@ impl Game<'_> {
             eye[1].floor() as i32,
             eye[2].floor() as i32,
         );
-        let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
+        let packed = block_entity_render::vertex_light(light);
         let shown = self.hands_to_render();
         let used_hand = self.used_hand();
         let spinning = self
@@ -14588,7 +14578,13 @@ impl Game<'_> {
                     .models
                     .swap_animation_scale(&horizon_client::item_render::stack_view(stack))
             });
-            let attack = attacks[i];
+            // A first-person swing belongs to the slot that started it. The combat swing
+            // and attack timing still run through the original state.
+            let shows_swing = self.swing.attack_hand() == hand
+                && (hand == Hand::Off
+                    || (self.main_hand_swing_slot == Some(self.selected)
+                        && self.visible_hands[i].0 == self.selected));
+            let attack = if shows_swing { swing } else { 0.0 };
             let inverse_height =
                 horizon_client::first_person::equip_displacement(heights[i], scale);
             let mut canceled = false;
@@ -14741,11 +14737,7 @@ impl Game<'_> {
                 }
                 _ if spinning => ItemPose::SpinAttack,
                 // ItemInHandRenderer: a STAB swing of this hand jabs.
-                _ if self
-                    .swing
-                    .current
-                    .is_some_and(|c| c.hand == hand && c.animation.kind == 2) =>
-                {
+                _ if shows_swing && self.swing.current.is_some_and(|c| c.animation.kind == 2) => {
                     ItemPose::Stab
                 }
                 _ => ItemPose::Swing,
@@ -14793,17 +14785,7 @@ impl Game<'_> {
                 m = to_world * legacy;
             }
             runs.push((out.len() as u32, item_id));
-            let light = self.world.light(
-                eye[0].floor() as i32,
-                eye[1].floor() as i32,
-                eye[2].floor() as i32,
-            );
-            self.submit_item_world(
-                &state,
-                m,
-                block_entity_render::vertex_light(light),
-                &mut out,
-            );
+            self.submit_item_world(&state, m, packed, &mut out);
         }
         // The hand has its own submit storage, which never uses improved
         // transparency (`LevelRenderer` alone calls `setUseImprovedTransparency`):
@@ -19839,6 +19821,7 @@ impl<'a> Game<'a> {
             ordered: Default::default(),
             level_up_sound: Default::default(),
             swing: Default::default(),
+            main_hand_swing_slot: None,
             swings_started: 0,
             heights: Default::default(),
             sway: Default::default(),

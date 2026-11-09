@@ -292,7 +292,6 @@ impl Launcher {
         horizon_action: Option<AnyElement>,
         launcher: String,
         launcher_action: Option<AnyElement>,
-        cx: &mut Context<Self>,
     ) -> Div {
         let t = self.theme;
         let installed = self
@@ -347,7 +346,7 @@ impl Launcher {
             .gap(px(8.))
             .child(about_tile(
                 self.horizon_mark(42.),
-                "Horizon".into(),
+                "Purview".into(),
                 installed.unwrap_or_else(|| tr("Nightly").to_string()),
                 div()
                     .flex()
@@ -361,13 +360,7 @@ impl Launcher {
             .child(about_tile(
                 square("computer"),
                 tr("Launcher").to_string(),
-                div()
-                    .id("launcher-version")
-                    .child(launcher)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.version_clicked();
-                        cx.notify();
-                    })),
+                div().id("launcher-version").child(launcher),
                 div().children(launcher_action).into_any_element(),
             ))
             .child(about_tile(
@@ -446,13 +439,7 @@ impl Launcher {
                 .into_any_element()
         };
         let about = card()
-            .child(self.about_tiles(
-                b.horizon,
-                b.horizon_action,
-                b.launcher,
-                b.launcher_action,
-                cx,
-            ))
+            .child(self.about_tiles(b.horizon, b.horizon_action, b.launcher, b.launcher_action))
             .child(index_row(
                 0,
                 tr("Logs"),
@@ -484,8 +471,7 @@ impl Launcher {
                     Some(b.menu_entry.into_any_element()),
                     &t,
                 ))
-            })
-            .children(self.dev_options_section(cx));
+            });
         let data = card().child(self.collection_section(cx));
         vec![account, updates, launcher, network, game, ai, about, data]
     }

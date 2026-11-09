@@ -3,7 +3,8 @@
 
 Requires OpenSSL with Ed25519 support. Private material stays in a temporary
 folder beside the private key (outside git); only public signatures enter notes.
-The base is an exact installed upstream version, bootstrap-tag its GitHub tag.
+For a self-contained Windows package, use the release version as base (vVERSION)
+and bundled as bootstrap-tag.
 """
 import argparse
 import base64
